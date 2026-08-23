@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Iterable, Optional
 import math
+import os
 import re
 import xml.etree.ElementTree as ET
 
@@ -25,12 +29,20 @@ class WorkoutRecord:
     duration_seconds: float
     total_distance_m: Optional[float]
     total_energy_kcal: Optional[float]
+    active_energy_kcal: Optional[float] = None
     total_distance_unit: str = ""
     total_energy_unit: str = ""
     source_name: str = ""
     source_version: str = ""
     device: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    heart_rate_samples: list[tuple[datetime, float]] = field(default_factory=list)
+
+    @property
+    def average_heart_rate_bpm(self) -> Optional[float]:
+        if not self.heart_rate_samples:
+            return None
+        return sum(value for _, value in self.heart_rate_samples) / len(self.heart_rate_samples)
 
     @property
     def duration_hours(self) -> float:
@@ -140,6 +152,30 @@ def _workout_value(elem: ET.Element, names: tuple[str, ...]) -> Optional[str]:
     return None
 
 
+def _workout_statistic(elem: ET.Element, keywords: tuple[str, ...]) -> tuple[Optional[float], str]:
+    candidates: list[tuple[int, float, str]] = []
+    for child in elem.iter():
+        tag = child.tag.split("}")[-1].lower()
+        if tag not in {"workoutstatistics", "statistics", "statistic"}:
+            continue
+
+        statistic_type = child.attrib.get("type", "").lower()
+        if not any(keyword in statistic_type for keyword in keywords):
+            continue
+
+        value = parse_numeric(child.attrib.get("sum") or child.attrib.get("value"))
+        if value is None:
+            continue
+        unit = child.attrib.get("unit", "")
+        priority = 0 if "activeenergy" in statistic_type else 1
+        candidates.append((priority, value, unit))
+
+    if not candidates:
+        return None, ""
+    _, value, unit = sorted(candidates, key=lambda item: item[0])[0]
+    return value, unit
+
+
 def normalize_distance_meters(distance: Optional[float], unit: Optional[str]) -> Optional[float]:
     if distance is None:
         return None
@@ -175,11 +211,13 @@ def normalize_energy_kcal(energy: Optional[float], unit: Optional[str]) -> Optio
     return float(energy)
 
 
-def _utc_for_comparison(value: Optional[datetime]) -> Optional[datetime]:
+def _utc_for_comparison(
+    value: Optional[datetime], assume_timezone: Optional[Any] = timezone.utc
+) -> Optional[datetime]:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=assume_timezone or timezone.utc)
     return value.astimezone(timezone.utc)
 
 
@@ -222,12 +260,33 @@ def _find_uuid(value: str | None) -> Optional[str]:
 def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
     export_path = Path(export_path)
     workouts: list[WorkoutRecord] = []
+    heart_rate_samples: list[tuple[datetime, float]] = []
+    active_energy_samples: list[tuple[datetime, float]] = []
 
     if not export_path.exists():
         return workouts
 
     for event, elem in ET.iterparse(export_path, events=("end",)):
-        if elem.tag.split("}")[-1] != "Workout":
+        tag = elem.tag.split("}")[-1]
+        if tag == "Record":
+            record_type = elem.attrib.get("type", "").lower()
+            if "heartrate" in record_type:
+                sample_time = parse_apple_datetime(elem.attrib.get("startDate"))
+                sample_value = parse_numeric(elem.attrib.get("value"))
+                if sample_time and sample_value is not None:
+                    heart_rate_samples.append((sample_time, sample_value))
+            elif "activeenergyburned" in record_type:
+                sample_time = parse_apple_datetime(elem.attrib.get("startDate"))
+                sample_value = normalize_energy_kcal(
+                    parse_numeric(elem.attrib.get("value")),
+                    elem.attrib.get("unit", "kcal"),
+                )
+                if sample_time and sample_value is not None:
+                    active_energy_samples.append((sample_time, sample_value))
+            elem.clear()
+            continue
+
+        if tag != "Workout":
             continue
 
         attrib = dict(elem.attrib)
@@ -243,22 +302,42 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
         distance_raw = _workout_value(elem, ("totalDistance", "distance"))
         distance_value = parse_numeric(distance_raw)
         distance_unit = _workout_value(elem, ("totalDistanceUnit", "distanceUnit")) or ""
+        if distance_value is None:
+            distance_value, distance_unit = _workout_statistic(
+                elem,
+                ("distance", "walkingrunningdistance", "cyclingdistance", "runningdistance"),
+            )
         energy_raw = _workout_value(elem, ("totalEnergyBurned", "totalEnergy", "energyBurned", "energy"))
         energy_value = parse_numeric(energy_raw)
         energy_unit = _workout_value(elem, ("totalEnergyBurnedUnit", "energyUnit")) or "kcal"
+        if energy_value is None:
+            energy_value, statistic_unit = _workout_statistic(
+                elem,
+                ("activeenergyburned", "totalenergyburned", "energyburned"),
+            )
+            energy_unit = statistic_unit or energy_unit
+        active_stat_value, active_stat_unit = _workout_statistic(elem, ("activeenergyburned",))
 
         metadata = _extract_metadata_from_element(elem)
         if "MetadataEntry" in metadata and isinstance(metadata["MetadataEntry"], dict):
             metadata.update(metadata["MetadataEntry"])
 
+        workout_uuid = (attrib.get("uuid") or "").strip()
+        if not workout_uuid:
+            # Some exports, including Connect sources, omit workout UUIDs.
+            # Keep each record addressable so route matches do not overwrite one another.
+            start_key = start_date.isoformat() if start_date else "unknown-time"
+            workout_uuid = f"generated-workout-{len(workouts) + 1:06d}-{start_key}"
+
         workout = WorkoutRecord(
-            uuid=attrib.get("uuid", ""),
+            uuid=workout_uuid,
             activity_type=clean_activity_type(attrib.get("workoutActivityType", "")),
             start_date=start_date,
             end_date=end_date,
             duration_seconds=duration_seconds,
             total_distance_m=normalize_distance_meters(distance_value, distance_unit),
             total_energy_kcal=normalize_energy_kcal(energy_value, energy_unit),
+            active_energy_kcal=normalize_energy_kcal(active_stat_value, active_stat_unit),
             total_distance_unit=distance_unit,
             total_energy_unit=energy_unit,
             source_name=attrib.get("sourceName", ""),
@@ -268,6 +347,32 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
         )
         workouts.append(workout)
         elem.clear()
+
+    heart_rate_samples.sort(key=lambda sample: _utc_for_comparison(sample[0]).timestamp())
+    sample_times = [_utc_for_comparison(sample[0]).timestamp() for sample in heart_rate_samples]
+    active_energy_samples.sort(key=lambda sample: _utc_for_comparison(sample[0]).timestamp())
+    active_energy_times = [_utc_for_comparison(sample[0]).timestamp() for sample in active_energy_samples]
+    for workout in workouts:
+        workout_start = _utc_for_comparison(workout.start_date)
+        workout_end = _utc_for_comparison(workout.end_date) or workout_start
+        if not workout_start or not workout_end:
+            continue
+
+        start_timestamp = workout_start.timestamp()
+        end_timestamp = workout_end.timestamp()
+        start_index = bisect_left(sample_times, start_timestamp)
+        end_index = bisect_right(sample_times, end_timestamp)
+        workout.heart_rate_samples = [
+            heart_rate_samples[index][0:2] for index in range(start_index, end_index)
+        ]
+
+        active_start_index = bisect_left(active_energy_times, start_timestamp)
+        active_end_index = bisect_right(active_energy_times, end_timestamp)
+        if active_start_index < active_end_index:
+            workout.active_energy_kcal = sum(
+                active_energy_samples[index][1]
+                for index in range(active_start_index, active_end_index)
+            )
 
     empty_date = datetime.min.replace(tzinfo=timezone.utc)
     workouts.sort(key=lambda item: _utc_for_comparison(item.start_date) or empty_date)
@@ -309,6 +414,24 @@ def _extract_route_metadata_text(text: str) -> dict[str, Optional[str]]:
     return metadata
 
 
+def _extract_route_time_from_filename(file_path: Path) -> Optional[datetime]:
+    match = re.search(
+        r"route[_-](\d{4}-\d{2}-\d{2})[_-](\d{1,2})[.](\d{2})(am|pm)",
+        file_path.stem.lower(),
+    )
+    if not match:
+        return None
+
+    date_part, hour_text, minute_text, meridiem = match.groups()
+    hour = int(hour_text) % 12
+    if meridiem == "pm":
+        hour += 12
+    return datetime.strptime(
+        f"{date_part} {hour:02d}:{minute_text}:00",
+        "%Y-%m-%d %H:%M:%S",
+    )
+
+
 def _parse_gpx_route(file_path: Path) -> RouteRecord:
     with file_path.open("r", encoding="utf-8", errors="ignore") as handle:
         gpx = gpxpy.parse(handle)
@@ -326,7 +449,29 @@ def _parse_gpx_route(file_path: Path) -> RouteRecord:
                     )
                 )
 
-    start_time = points[0].timestamp if points else None
+    for gpx_route in gpx.routes:
+        for point in gpx_route.points:
+            points.append(
+                RoutePoint(
+                    latitude=point.latitude,
+                    longitude=point.longitude,
+                    elevation_m=point.elevation,
+                    timestamp=None,
+                )
+            )
+
+    for point in gpx.waypoints:
+        points.append(
+            RoutePoint(
+                latitude=point.latitude,
+                longitude=point.longitude,
+                elevation_m=point.elevation,
+                timestamp=point.time,
+            )
+        )
+
+    start_time = next((point.timestamp for point in points if point.timestamp), None)
+    start_time = start_time or _extract_route_time_from_filename(file_path)
     end_time = points[-1].timestamp if points else None
     raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
     metadata = _extract_route_metadata_text(raw_text)
@@ -378,6 +523,7 @@ def _parse_xml_route(file_path: Path) -> RouteRecord:
         points.append(RoutePoint(latitude=lat, longitude=lon, elevation_m=elevation, timestamp=timestamp))
 
     start_time = next((point.timestamp for point in points if point.timestamp), None)
+    start_time = start_time or _extract_route_time_from_filename(file_path)
     end_time = next((point.timestamp for point in reversed(points) if point.timestamp), None)
     return RouteRecord(
         file_path=file_path,
@@ -412,12 +558,27 @@ def parse_route_directory(route_dir: str | Path | None) -> list[RouteRecord]:
     if not base.exists() or not base.is_dir():
         return []
 
+    paths = [
+        path
+        for path in sorted(base.rglob("*"))
+        if path.is_file() and path.suffix.lower() in {".gpx", ".xml"}
+    ]
+    if len(paths) < 4:
+        parsed_routes = [parse_route_file(path) for path in paths]
+    else:
+        worker_count = min(len(paths), os.cpu_count() or 1, 8)
+        try:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                parsed_routes = list(executor.map(parse_route_file, paths, chunksize=4))
+        except (BrokenProcessPool, OSError, RuntimeError):
+            # Windows worker processes can terminate when route files are large.
+            # Keep loading reliable by retrying in the Streamlit process.
+            parsed_routes = [parse_route_file(path) for path in paths]
+
     routes: list[RouteRecord] = []
-    for path in sorted(base.rglob("*")):
-        if path.is_file() and path.suffix.lower() in {".gpx", ".xml"}:
-            route = parse_route_file(path)
-            if route and route.has_trackpoints:
-                routes.append(route)
+    for route in parsed_routes:
+        if route and route.has_trackpoints:
+            routes.append(route)
     return routes
 
 
@@ -438,7 +599,7 @@ def route_distance_meters(route: RouteRecord) -> float:
     return total
 
 
-def route_speeds_kph(route: RouteRecord) -> list[Optional[float]]:
+def route_speeds_mph(route: RouteRecord) -> list[Optional[float]]:
     speeds: list[Optional[float]] = [None]
     for previous, current in zip(route.points, route.points[1:]):
         if not previous.timestamp or not current.timestamp:
@@ -451,7 +612,7 @@ def route_speeds_kph(route: RouteRecord) -> list[Optional[float]]:
             speeds.append(None)
             continue
         meters = _haversine_meters(previous.latitude, previous.longitude, current.latitude, current.longitude)
-        speeds.append((meters / seconds) * 3.6)
+        speeds.append((meters / seconds) * 2.236936292)
     return speeds
 
 
@@ -487,9 +648,12 @@ def match_route_to_workout(workout: WorkoutRecord, routes: Iterable[RouteRecord]
     for route in routes:
         if not route.start_time:
             continue
-        route_start = _utc_for_comparison(route.start_time)
+        workout_timezone = workout.start_date.tzinfo if workout.start_date else timezone.utc
+        route_timezone = workout_timezone if route.start_time and route.start_time.tzinfo is None else timezone.utc
+        route_start = _utc_for_comparison(route.start_time, route_timezone)
         workout_start = _utc_for_comparison(workout.start_date)
-        route_end = _utc_for_comparison(route.end_time)
+        route_end_timezone = workout_timezone if route.end_time and route.end_time.tzinfo is None else timezone.utc
+        route_end = _utc_for_comparison(route.end_time, route_end_timezone)
         workout_end = _utc_for_comparison(workout.end_date)
         start_gap = abs((route_start - workout_start).total_seconds())
         end_gap = abs((route_end - workout_end).total_seconds()) if route_end and workout_end else 0.0
