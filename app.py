@@ -21,7 +21,7 @@ from health_parser import (
 )
 
 
-DATA_PARSER_VERSION = 8
+DATA_PARSER_VERSION = 9
 
 st.set_page_config(page_title="Apple Workout Calculator", layout="wide")
 

@@ -8,7 +8,7 @@ A Streamlit app for exploring workouts from an Apple Health export. It provides 
 - Filters workouts by date range and activity type; activity types are limited to those present in the selected date range.
 - Includes All time, Year to date, Past year, and Custom date range presets.
 - Summarizes accumulated hours, workout count, average duration, total distance in miles, and total energy in kcal.
-- Shows total and active calories separately.
+- Treats the workout's direct `totalEnergyBurned` value as active calories when available, and derives total calories by adding basal energy when Apple provides it.
 - Shows total miles, total calories, and active calories by workout type for the selected date range.
 - Charts workout time by day, week, or month.
 - Shows a workout-type duration breakdown.

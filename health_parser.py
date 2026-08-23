@@ -30,6 +30,7 @@ class WorkoutRecord:
     total_distance_m: Optional[float]
     total_energy_kcal: Optional[float]
     active_energy_kcal: Optional[float] = None
+    basal_energy_kcal: Optional[float] = None
     total_distance_unit: str = ""
     total_energy_unit: str = ""
     source_name: str = ""
@@ -262,6 +263,7 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
     workouts: list[WorkoutRecord] = []
     heart_rate_samples: list[tuple[datetime, float]] = []
     active_energy_samples: list[tuple[datetime, float]] = []
+    basal_energy_samples: list[tuple[datetime, float]] = []
 
     if not export_path.exists():
         return workouts
@@ -283,6 +285,14 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
                 )
                 if sample_time and sample_value is not None:
                     active_energy_samples.append((sample_time, sample_value))
+            elif "basalenergyburned" in record_type:
+                sample_time = parse_apple_datetime(elem.attrib.get("startDate"))
+                sample_value = normalize_energy_kcal(
+                    parse_numeric(elem.attrib.get("value")),
+                    elem.attrib.get("unit", "kcal"),
+                )
+                if sample_time and sample_value is not None:
+                    basal_energy_samples.append((sample_time, sample_value))
             elem.clear()
             continue
 
@@ -317,6 +327,14 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
             )
             energy_unit = statistic_unit or energy_unit
         active_stat_value, active_stat_unit = _workout_statistic(elem, ("activeenergyburned",))
+        basal_stat_value, basal_stat_unit = _workout_statistic(elem, ("basalenergyburned",))
+        direct_active_energy_kcal = normalize_energy_kcal(energy_value, energy_unit)
+        active_energy_kcal = (
+            direct_active_energy_kcal
+            if direct_active_energy_kcal is not None
+            else normalize_energy_kcal(active_stat_value, active_stat_unit)
+        )
+        basal_energy_kcal = normalize_energy_kcal(basal_stat_value, basal_stat_unit)
 
         metadata = _extract_metadata_from_element(elem)
         if "MetadataEntry" in metadata and isinstance(metadata["MetadataEntry"], dict):
@@ -336,8 +354,9 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
             end_date=end_date,
             duration_seconds=duration_seconds,
             total_distance_m=normalize_distance_meters(distance_value, distance_unit),
-            total_energy_kcal=normalize_energy_kcal(energy_value, energy_unit),
-            active_energy_kcal=normalize_energy_kcal(active_stat_value, active_stat_unit),
+            total_energy_kcal=active_energy_kcal,
+            active_energy_kcal=active_energy_kcal,
+            basal_energy_kcal=basal_energy_kcal,
             total_distance_unit=distance_unit,
             total_energy_unit=energy_unit,
             source_name=attrib.get("sourceName", ""),
@@ -352,6 +371,8 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
     sample_times = [_utc_for_comparison(sample[0]).timestamp() for sample in heart_rate_samples]
     active_energy_samples.sort(key=lambda sample: _utc_for_comparison(sample[0]).timestamp())
     active_energy_times = [_utc_for_comparison(sample[0]).timestamp() for sample in active_energy_samples]
+    basal_energy_samples.sort(key=lambda sample: _utc_for_comparison(sample[0]).timestamp())
+    basal_energy_times = [_utc_for_comparison(sample[0]).timestamp() for sample in basal_energy_samples]
     for workout in workouts:
         workout_start = _utc_for_comparison(workout.start_date)
         workout_end = _utc_for_comparison(workout.end_date) or workout_start
@@ -368,11 +389,22 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
 
         active_start_index = bisect_left(active_energy_times, start_timestamp)
         active_end_index = bisect_right(active_energy_times, end_timestamp)
-        if active_start_index < active_end_index:
+        if workout.active_energy_kcal is None and active_start_index < active_end_index:
             workout.active_energy_kcal = sum(
                 active_energy_samples[index][1]
                 for index in range(active_start_index, active_end_index)
             )
+
+        basal_start_index = bisect_left(basal_energy_times, start_timestamp)
+        basal_end_index = bisect_right(basal_energy_times, end_timestamp)
+        if workout.basal_energy_kcal is None and basal_start_index < basal_end_index:
+            workout.basal_energy_kcal = sum(
+                basal_energy_samples[index][1]
+                for index in range(basal_start_index, basal_end_index)
+            )
+
+        if workout.active_energy_kcal is not None and workout.basal_energy_kcal is not None:
+            workout.total_energy_kcal = workout.active_energy_kcal + workout.basal_energy_kcal
 
     empty_date = datetime.min.replace(tzinfo=timezone.utc)
     workouts.sort(key=lambda item: _utc_for_comparison(item.start_date) or empty_date)
