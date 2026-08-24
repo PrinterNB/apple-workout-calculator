@@ -77,6 +77,27 @@ def format_bytes(value: int) -> str:
 
 
 def workouts_to_frame(workouts: list[WorkoutRecord]) -> pd.DataFrame:
+    columns = [
+        "uuid",
+        "activity_type",
+        "start_date",
+        "end_date",
+        "start_date_local",
+        "end_date_local",
+        "start_date_local_date",
+        "duration_seconds",
+        "duration_hours",
+        "duration_minutes",
+        "total_distance_mi",
+        "total_energy_kcal",
+        "active_energy_kcal",
+        "average_heart_rate_bpm",
+        "distance_unit",
+        "energy_unit",
+        "source_name",
+        "source_version",
+        "device",
+    ]
     rows = []
     for workout in workouts:
         rows.append(
@@ -102,7 +123,7 @@ def workouts_to_frame(workouts: list[WorkoutRecord]) -> pd.DataFrame:
                 "device": workout.device,
             }
         )
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=columns)
     if not df.empty:
         df["start_date"] = pd.to_datetime(df["start_date"], utc=True)
         df["end_date"] = pd.to_datetime(df["end_date"], utc=True)
@@ -170,7 +191,7 @@ def create_time_grouped_frame(df: pd.DataFrame, granularity: str) -> pd.DataFram
 
     frequency_map = {
         "Day": "D",
-        "Week": "W-MON",
+        "Week": "W-SUN",
         "Month": "MS",
     }
     freq = frequency_map[granularity]
@@ -186,6 +207,20 @@ def create_time_grouped_frame(df: pd.DataFrame, granularity: str) -> pd.DataFram
         .reset_index()
         .rename(columns={"start_date": "period", "duration_hours": "hours"})
     )
+    if granularity == "Week":
+        grouped["week_start"] = grouped["period"] - pd.Timedelta(days=6)
+        grouped["period_label"] = grouped.apply(
+            lambda row: (
+                f"Week: {row['week_start'].strftime('%B')} {row['week_start'].day}, "
+                f"{row['week_start'].year} - {row['period'].strftime('%B')} "
+                f"{row['period'].day}, {row['period'].year}"
+            ),
+            axis=1,
+        )
+    else:
+        grouped["period_label"] = grouped["period"].map(
+            lambda value: value.strftime("%B") + f" {value.day}, {value.year}"
+        )
     return grouped
 
 
@@ -429,7 +464,7 @@ def render_elevation_profile(route: RouteRecord | None, workout: WorkoutRecord) 
         ),
         legend=dict(orientation="h"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 st.title("Apple Health Workout Explorer")
@@ -582,6 +617,8 @@ with tab1:
                     go.Bar(
                         x=time_grouped["period"],
                         y=time_grouped["hours"],
+                        customdata=time_grouped["period_label"],
+                        hovertemplate="%{customdata}<br>Hours: %{y:.2f}<extra></extra>",
                         marker_color="#2E86DE",
                     )
                 ]
@@ -594,7 +631,7 @@ with tab1:
                 height=380,
                 margin=dict(l=10, r=10, t=40, b=10),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     with c2:
         type_breakdown = create_type_breakdown(filtered_df)
@@ -619,7 +656,7 @@ with tab1:
                 margin=dict(l=10, r=10, t=40, b=10),
             )
             fig.update_xaxes(tickangle=-35)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     st.subheader("Distance and Energy by Workout Type")
     type_totals = create_type_totals(filtered_df)
@@ -642,7 +679,7 @@ with tab1:
         table_height = 45 + (len(type_totals_display) * 35)
         st.dataframe(
             type_totals_display,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=table_height,
         )
@@ -676,7 +713,7 @@ with tab1:
             "average_heart_rate_bpm": "average_heart_rate_bpm",
         }
     )
-    st.dataframe(display_df, use_container_width=True, hide_index=True, height=700)
+    st.dataframe(display_df, width="stretch", hide_index=True, height=700)
 
 with tab2:
     st.subheader("Workout Selector")

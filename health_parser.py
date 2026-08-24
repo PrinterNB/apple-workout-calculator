@@ -3,8 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable, Optional
 import math
@@ -613,14 +612,12 @@ def parse_route_directory(route_dir: str | Path | None) -> list[RouteRecord]:
     if len(paths) < 4:
         parsed_routes = [parse_route_file(path) for path in paths]
     else:
-        worker_count = min(len(paths), os.cpu_count() or 1, 8)
-        try:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                parsed_routes = list(executor.map(parse_route_file, paths, chunksize=4))
-        except (BrokenProcessPool, OSError, RuntimeError):
-            # Windows worker processes can terminate when route files are large.
-            # Keep loading reliable by retrying in the Streamlit process.
-            parsed_routes = [parse_route_file(path) for path in paths]
+        # Threads avoid Windows multiprocessing re-importing app.py while still
+        # allowing lxml-backed parsing to work concurrently without Streamlit
+        # session-state or spawn-related failures.
+        worker_count = min(len(paths), max(4, os.cpu_count() or 1), 32)
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            parsed_routes = list(executor.map(parse_route_file, paths))
 
     routes: list[RouteRecord] = []
     for route in parsed_routes:
