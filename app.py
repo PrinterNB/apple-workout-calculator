@@ -246,11 +246,38 @@ def render_map(route: RouteRecord) -> None:
         st.info("No route points available for this workout.")
         return
 
-    coordinates = [(point.latitude, point.longitude) for point in route.points]
     start_point = route.points[0]
     end_point = route.points[-1]
     center_lat = sum(point.latitude for point in route.points) / len(route.points)
     center_lon = sum(point.longitude for point in route.points) / len(route.points)
+    speeds_mph = route_speeds_mph(route)
+
+    valid_speeds = sorted(speed for speed in speeds_mph if speed is not None and speed >= 0)
+    if valid_speeds:
+        lower_speed = valid_speeds[max(0, int((len(valid_speeds) - 1) * 0.05))]
+        upper_speed = valid_speeds[max(0, int((len(valid_speeds) - 1) * 0.95))]
+    else:
+        lower_speed = 0.0
+        upper_speed = 1.0
+
+    def speed_color(speed_mph: Optional[float]) -> str:
+        if speed_mph is None or speed_mph < 0:
+            return "#9ca3af"
+        if upper_speed <= lower_speed:
+            position = 0.5
+        else:
+            position = max(0.0, min(1.0, (speed_mph - lower_speed) / (upper_speed - lower_speed)))
+        if position < 0.5:
+            blend = position * 2
+            red = int(239 + (250 - 239) * blend)
+            green = int(68 + (204 - 68) * blend)
+            blue = int(68 + (21 - 68) * blend)
+        else:
+            blend = (position - 0.5) * 2
+            red = int(250 + (34 - 250) * blend)
+            green = int(204 + (197 - 204) * blend)
+            blue = int(21 + (94 - 21) * blend)
+        return f"#{red:02x}{green:02x}{blue:02x}"
 
     satellite_map = folium.Map(
         location=[center_lat, center_lon],
@@ -264,13 +291,29 @@ def render_map(route: RouteRecord) -> None:
         overlay=False,
         control=False,
     ).add_to(satellite_map)
-    folium.PolyLine(
-        coordinates,
-        color="#22a7f0",
-        weight=5,
-        opacity=0.9,
-        tooltip="Workout route",
-    ).add_to(satellite_map)
+    for index, (start, end) in enumerate(zip(route.points, route.points[1:]), start=1):
+        speed = speeds_mph[index]
+        speed_label = f"{speed:.1f} mph" if speed is not None else "Speed unavailable"
+        folium.PolyLine(
+            [(start.latitude, start.longitude), (end.latitude, end.longitude)],
+            color=speed_color(speed),
+            weight=5,
+            opacity=0.9,
+            tooltip=f"Speed: {speed_label}",
+        ).add_to(satellite_map)
+
+    legend_html = f"""
+    <div style="position: fixed; bottom: 24px; left: 24px; z-index: 9999;
+                background: rgba(255,255,255,.92); padding: 8px 10px;
+                border: 1px solid #d1d5db; border-radius: 5px; font-size: 12px;">
+      <div style="font-weight: 600; margin-bottom: 4px;">Route speed</div>
+      <div style="width: 180px; height: 10px; background: linear-gradient(90deg, #ef4444, #facc15, #22c55e);"></div>
+      <div style="width: 180px; display: flex; justify-content: space-between;">
+        <span>Slow</span><span>Fast</span>
+      </div>
+    </div>
+    """
+    satellite_map.get_root().html.add_child(folium.Element(legend_html))
     folium.Marker(
         [start_point.latitude, start_point.longitude],
         tooltip="Start",
@@ -281,7 +324,16 @@ def render_map(route: RouteRecord) -> None:
         tooltip="End",
         icon=folium.Icon(color="red", icon="stop"),
     ).add_to(satellite_map)
-    satellite_map.fit_bounds(coordinates)
+    route_bounds = [
+        [min(point.latitude for point in route.points), min(point.longitude for point in route.points)],
+        [max(point.latitude for point in route.points), max(point.longitude for point in route.points)],
+    ]
+    satellite_map.fit_bounds(
+        route_bounds,
+        padding_top_left=(30, 30),
+        padding_bottom_right=(30, 30),
+        max_zoom=16,
+    )
     route_key = f"{route.file_path.resolve()}:{len(route.points)}"
     map_html = f"<!-- route-key: {route_key} -->\n{satellite_map.get_root().render()}"
     components.html(map_html, height=600, scrolling=False)
