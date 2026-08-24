@@ -14,6 +14,11 @@ import xml.etree.ElementTree as ET
 
 import gpxpy
 
+try:
+    from lxml import etree as FAST_XML_ET
+except ImportError:
+    FAST_XML_ET = None
+
 
 UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -268,7 +273,17 @@ def parse_workout_export(export_path: str | Path) -> list[WorkoutRecord]:
     if not export_path.exists():
         return workouts
 
-    for event, elem in ET.iterparse(export_path, events=("end",)):
+    if FAST_XML_ET is not None:
+        xml_events = FAST_XML_ET.iterparse(
+            str(export_path),
+            events=("end",),
+            recover=True,
+            huge_tree=True,
+        )
+    else:
+        xml_events = ET.iterparse(export_path, events=("end",))
+
+    for event, elem in xml_events:
         tag = elem.tag.split("}")[-1]
         if tag == "Record":
             record_type = elem.attrib.get("type", "").lower()

@@ -4,3 +4,4 @@ plotly
 pydeck
 gpxpy
 folium
+lxml

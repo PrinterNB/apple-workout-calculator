@@ -24,6 +24,7 @@ A Streamlit app for exploring workouts from an Apple Health export. It provides 
 ## Requirements
 
 - Python 3.10 or newer recommended
+- `lxml` is used for faster streaming XML parsing when installed; the app falls back to Python's standard XML parser if it is unavailable.
 - An extracted Apple Health `apple_health_export/` folder containing `export.xml`
 - Optional `workout-routes/` subdirectory inside that folder
 
