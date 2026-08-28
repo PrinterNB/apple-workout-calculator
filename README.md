@@ -11,7 +11,8 @@ A Streamlit app for exploring workouts from an Apple Health export. It provides 
 - Treats the workout's direct `totalEnergyBurned` value as active calories when available, and derives total calories by adding basal energy when Apple provides it.
 - Shows total miles, total calories, and active calories by workout type for the selected date range.
 - Charts workout time by day, week, or month.
-- Shows a workout-type duration breakdown.
+- Shows a workout-type duration breakdown ("Time Per Workout Type").
+- Charts active calories per workout type for the filtered workouts.
 - Shows the filtered workout table newest first.
 - Uses the workout's original local time with standard AM/PM formatting.
 - Parses `.gpx` and `.xml` files from an optional `workout-routes/` directory.
@@ -67,7 +68,8 @@ The accumulator tab applies the sidebar filters and shows:
 - Total distance in miles
 - Total calories and active calories
 - Accumulated time grouped by day, week, or month
-- Duration grouped by workout type
+- Time grouped by workout type
+- Active calories grouped by workout type
 - Distance, total calories, and active calories grouped by workout type
 - A newest-first filtered workout summary table
 
@@ -76,6 +78,7 @@ The accumulator tab applies the sidebar filters and shows:
 Choose a workout from the filtered set to view its local start/end time in AM/PM format, duration, distance, total calories, active calories, average heart rate, workout type, and route status. When a route is matched, the tab also shows:
 
 - Interactive satellite GPS map with the complete route
+- Route time-window slider expressed in decimal minutes after the workout start
 - Green start marker and red end marker
 - Elevation profile
 - Calculated speed profile in miles per hour when trackpoint timestamps are available

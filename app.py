@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -235,6 +237,17 @@ def create_type_breakdown(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def create_type_active_calories(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["activity_type", "active_kcal"])
+    return (
+        df.groupby("activity_type", as_index=False)
+        .agg(active_kcal=("active_energy_kcal", lambda values: values.sum(min_count=1)))
+        .dropna(subset=["active_kcal"])
+        .sort_values("active_kcal", ascending=False)
+    )
+
+
 def create_type_totals(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(
@@ -276,16 +289,41 @@ def display_metrics(df: pd.DataFrame) -> None:
     col6.metric("Active Calories", f"{active_energy_kcal:.1f} kcal" if pd.notna(active_energy_kcal) else "N/A")
 
 
-def render_map(route: RouteRecord) -> None:
+def render_map(
+    route: RouteRecord,
+    time_window: tuple[datetime, datetime] | None = None,
+) -> None:
     if not route.points:
         st.info("No route points available for this workout.")
         return
 
     start_point = route.points[0]
     end_point = route.points[-1]
-    center_lat = sum(point.latitude for point in route.points) / len(route.points)
-    center_lon = sum(point.longitude for point in route.points) / len(route.points)
     speeds_mph = route_speeds_mph(route)
+
+    def segment_visible(index: int) -> bool:
+        # index is 1-based: the segment from points[index - 1] to points[index].
+        if time_window is None:
+            return True
+        start_time = route.points[index - 1].timestamp
+        end_time = route.points[index].timestamp
+        if start_time is None or end_time is None:
+            return True
+        try:
+            segment_start = min(start_time, end_time)
+            segment_end = max(start_time, end_time)
+        except TypeError:
+            return True
+        return segment_start <= time_window[1] and segment_end >= time_window[0]
+
+    visible_indices = [index for index in range(1, len(route.points)) if segment_visible(index)]
+    if not visible_indices:
+        visible_indices = list(range(1, len(route.points)))
+    visible_points = [
+        point for index in visible_indices for point in (route.points[index - 1], route.points[index])
+    ]
+    center_lat = sum(point.latitude for point in visible_points) / len(visible_points)
+    center_lon = sum(point.longitude for point in visible_points) / len(visible_points)
 
     valid_speeds = sorted(speed for speed in speeds_mph if speed is not None and speed >= 0)
     if valid_speeds:
@@ -326,7 +364,9 @@ def render_map(route: RouteRecord) -> None:
         overlay=False,
         control=False,
     ).add_to(satellite_map)
-    for index, (start, end) in enumerate(zip(route.points, route.points[1:]), start=1):
+    for index in visible_indices:
+        start = route.points[index - 1]
+        end = route.points[index]
         speed = speeds_mph[index]
         speed_label = f"{speed:.1f} mph" if speed is not None else "Speed unavailable"
         folium.PolyLine(
@@ -360,8 +400,8 @@ def render_map(route: RouteRecord) -> None:
         icon=folium.Icon(color="red", icon="stop"),
     ).add_to(satellite_map)
     route_bounds = [
-        [min(point.latitude for point in route.points), min(point.longitude for point in route.points)],
-        [max(point.latitude for point in route.points), max(point.longitude for point in route.points)],
+        [min(point.latitude for point in visible_points), min(point.longitude for point in visible_points)],
+        [max(point.latitude for point in visible_points), max(point.longitude for point in visible_points)],
     ]
     satellite_map.fit_bounds(
         route_bounds,
@@ -470,9 +510,69 @@ def render_elevation_profile(route: RouteRecord | None, workout: WorkoutRecord) 
 st.title("Apple Health Workout Explorer")
 st.caption("Load an Apple Health export folder containing `export.xml` and, optionally, `workout-routes/`.")
 
+
+def choose_export_folder(initial_dir: Path | None = None) -> str | None:
+    """Open a native folder-picker window and return the chosen path (None if cancelled)."""
+    initial = str(initial_dir) if initial_dir and initial_dir.is_dir() else None
+
+    # Preferred: tkinter's native "Select Folder" dialog (real Windows file browser).
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+            root.update()
+            selected = filedialog.askdirectory(
+                title="Select Apple Health export folder",
+                initialdir=initial,
+            )
+        finally:
+            root.attributes("-topmost", False)
+            root.destroy()
+        if selected:
+            return selected
+    except Exception:
+        pass
+
+    # Fallback: Windows Forms folder browser via PowerShell.
+    if os.name == "nt":
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "if ($dialog.ShowDialog() -eq 'OK') { $dialog.SelectedPath }"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            selected = result.stdout.strip()
+            if selected:
+                return selected
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
 with st.sidebar:
     st.header("Data Source")
-    export_folder = st.text_input("Path to apple_health_export folder", value="")
+    if st.button("Select Folder…", use_container_width=True):
+        raw = (st.session_state.get("export_folder_input") or "").strip()
+        chosen = choose_export_folder(Path(raw).expanduser() if raw else Path.home())
+        if chosen:
+            st.session_state["export_folder_input"] = chosen
+        else:
+            st.caption("No folder selected — you can also type the path below.")
+    export_folder = st.text_input(
+        "Path to apple_health_export folder",
+        value="",
+        key="export_folder_input",
+    )
     reload_requested = st.button("Reload data")
 
 if not export_folder:
@@ -648,7 +748,7 @@ with tab1:
                 ]
             )
             fig.update_layout(
-                title="Workout Type Breakdown",
+                title="Time Per Workout Type",
                 xaxis_title="Workout Type",
                 yaxis_title="Hours",
                 template="plotly_white",
@@ -657,6 +757,31 @@ with tab1:
             )
             fig.update_xaxes(tickangle=-35)
             st.plotly_chart(fig, width="stretch")
+
+    active_calories = create_type_active_calories(filtered_df)
+    if active_calories.empty:
+        st.info("No active calorie data available for the current filters.")
+    else:
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=active_calories["activity_type"],
+                    y=active_calories["active_kcal"],
+                    marker_color="#E67E22",
+                    hovertemplate="%{x}<br>Active Calories: %{y:.1f} kcal<extra></extra>",
+                )
+            ]
+        )
+        fig.update_layout(
+            title="Active Calories Per Workout Type",
+            xaxis_title="Workout Type",
+            yaxis_title="Active Calories (kcal)",
+            template="plotly_white",
+            height=380,
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        fig.update_xaxes(tickangle=-35)
+        st.plotly_chart(fig, width="stretch")
 
     st.subheader("Distance and Energy by Workout Type")
     type_totals = create_type_totals(filtered_df)
@@ -776,7 +901,35 @@ with tab2:
 
         if selected_route:
             st.markdown("### Route Map")
-            render_map(selected_route)
+            route_timestamps = [timestamp for timestamp in route_times(selected_route) if timestamp is not None]
+            time_window: tuple[datetime, datetime] | None = None
+            if len(route_timestamps) >= 2:
+                route_start_time = min(route_timestamps)
+                total_route_seconds = int((max(route_timestamps) - route_start_time).total_seconds())
+                total_route_minutes = total_route_seconds / 60.0
+                if total_route_seconds >= 2:
+                    window = st.slider(
+                        "Show route between (minutes after start)",
+                        min_value=0.0,
+                        max_value=total_route_minutes,
+                        value=(0.0, total_route_minutes),
+                        step=0.1,
+                        key=f"route_time_window_minutes_{selected_uuid}",
+                        help="Only the path and speed segments recorded inside this time window are drawn on the map.",
+                    )
+                    time_window = (
+                        route_start_time + timedelta(minutes=window[0]),
+                        route_start_time + timedelta(minutes=window[1]),
+                    )
+                    st.caption(
+                        f"Map shows the route between {format_duration(window[0] * 60.0)} and "
+                        f"{format_duration(window[1] * 60.0)} after the start."
+                    )
+                else:
+                    st.caption("This route is too short to filter by time.")
+            else:
+                st.caption("This route has no per-point timestamps, so time filtering is unavailable.")
+            render_map(selected_route, time_window)
         else:
             st.info("This workout does not have a matched GPS route in the provided route directory.")
 
