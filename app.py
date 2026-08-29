@@ -651,6 +651,14 @@ if not df.empty:
         row_mask = (df["uuid"] == workout_uuid) & df["total_distance_mi"].isna()
         if row_mask.any():
             df.loc[row_mask, "total_distance_mi"] = route_distance_meters(route) / 1609.344
+
+    pace_mask = (
+        df["total_distance_mi"].notna()
+        & (df["total_distance_mi"] > 0)
+        & df["duration_minutes"].notna()
+        & (df["duration_minutes"] > 0)
+    )
+    df["pace_min_per_mi"] = (df["duration_minutes"] / df["total_distance_mi"]).where(pace_mask)
 else:
     df["route_status"] = pd.Series(dtype="string")
     df["route_file"] = pd.Series(dtype="string")
@@ -816,6 +824,7 @@ with tab1:
         "activity_type",
         "duration_hours",
         "total_distance_mi",
+        "pace_min_per_mi",
         "total_energy_kcal",
         "active_energy_kcal",
         "average_heart_rate_bpm",
@@ -825,6 +834,7 @@ with tab1:
     display_df["end_date_local"] = display_df["end_date_local"].map(format_local_datetime)
     display_df["duration_hours"] = pd.to_numeric(display_df["duration_hours"], errors="coerce").round(2)
     display_df["total_distance_mi"] = pd.to_numeric(display_df["total_distance_mi"], errors="coerce").round(2)
+    display_df["pace_min_per_mi"] = pd.to_numeric(display_df["pace_min_per_mi"], errors="coerce").round(2)
     display_df["total_energy_kcal"] = pd.to_numeric(display_df["total_energy_kcal"], errors="coerce").round(1)
     display_df["active_energy_kcal"] = pd.to_numeric(display_df["active_energy_kcal"], errors="coerce").round(1)
     display_df["average_heart_rate_bpm"] = pd.to_numeric(
@@ -835,8 +845,9 @@ with tab1:
                 "start_date_local": "start_date",
                 "end_date_local": "end_date",
                 "total_distance_mi": "total_distance_miles",
-            "average_heart_rate_bpm": "average_heart_rate_bpm",
-        }
+                "pace_min_per_mi": "pace_min_per_mi",
+                "average_heart_rate_bpm": "average_heart_rate_bpm",
+            }
     )
     st.dataframe(display_df, width="stretch", hide_index=True, height=700)
 
@@ -874,10 +885,15 @@ with tab2:
         energy_value = selected_row["total_energy_kcal"]
         active_energy_value = selected_row["active_energy_kcal"]
         heart_rate_value = selected_row["average_heart_rate_bpm"]
-        metric_cols = st.columns(3)
+        pace_value = selected_row["pace_min_per_mi"] if "pace_min_per_mi" in selected_row.index else None
+        metric_cols = st.columns(4)
         metric_cols[0].metric("Distance", f"{distance_value:.2f} mi" if pd.notna(distance_value) else "N/A")
-        metric_cols[1].metric("Total Calories", f"{energy_value:.1f} kcal" if pd.notna(energy_value) else "N/A")
-        metric_cols[2].metric(
+        metric_cols[1].metric(
+            "Avg Pace",
+            f"{pace_value:.2f} min/mi" if pd.notna(pace_value) else "N/A",
+        )
+        metric_cols[2].metric("Total Calories", f"{energy_value:.1f} kcal" if pd.notna(energy_value) else "N/A")
+        metric_cols[3].metric(
             "Active Calories",
             f"{active_energy_value:.1f} kcal" if pd.notna(active_energy_value) else "N/A",
         )
