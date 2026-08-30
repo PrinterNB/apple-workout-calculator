@@ -28,7 +28,7 @@ from health_parser import (
 )
 
 
-DATA_PARSER_VERSION = 20
+DATA_PARSER_VERSION = 21
 
 st.set_page_config(page_title="Apple Workout Calculator", layout="wide")
 
@@ -1383,43 +1383,72 @@ with tab3:
         st.caption(f"Measurement records matched in export.xml — {matched}")
 
     st.subheader("Current Measurements")
-    # Day-based metrics show one of two views both precomputed at **Process data**
-    # time (see build_metric_summaries): the default is the average of the last
-    # seven complete days (today's total is still in progress and would read
-    # low); the toggle switches to the average over the whole selected period.
-    use_filtered_avg = st.toggle(
-        "Average over whole selected time period",
+    view_day = st.toggle(
+        "View a specific day",
         value=False,
-        key="daily_metrics_avg_filtered",
-        help="Off: day-based metrics show the 7-day average (default). "
-        "On: day-based metrics show the average across the entire selected time period.",
+        key="daily_metrics_view_day",
+        help="Show the measurements for one chosen day (within the filtered dataset) "
+        "instead of the averages.",
     )
-    avg7_labels = {
-        "steps": "Steps (7-day avg)",
-        "walk_run_distance_m": "Walk + Run Distance (mi, 7-day avg)",
-        "sleep_hours": "Sleep Duration (h, 7-day avg)",
-        "resting_hr_bpm": "Resting Heart Rate (bpm, 7-day avg)",
-        "move_energy_kcal": "Move Calories (kcal, 7-day avg)",
-        "exercise_minutes": "Exercise (min, 7-day avg)",
-        "stand_hours": "Stand (h, 7-day avg)",
+    day_row = None
+    tile_labels = {
+        "steps": "Steps",
+        "walk_run_distance_m": "Walk + Run Distance (mi)",
+        "sleep_hours": "Sleep Duration (h)",
+        "resting_hr_bpm": "Resting Heart Rate (bpm)",
+        "move_energy_kcal": "Move Calories (kcal)",
+        "exercise_minutes": "Exercise (min)",
+        "stand_hours": "Stand (h)",
     }
-    if use_filtered_avg:
-        avg7_labels = {column: label.replace("7-day avg", "range avg") for column, label in avg7_labels.items()}
-        if not metrics_frame.empty:
+    if view_day:
+        # Calendar picker, same widget as the custom range in the sidebar, bounded
+        # to the days present in the filtered dataset.
+        chosen_day = st.date_input(
+            "Day to view",
+            value=metrics_frame.index[-1].date(),
+            min_value=metrics_frame.index[0].date(),
+            max_value=metrics_frame.index[-1].date(),
+            key="daily_metrics_chosen_day",
+        )
+        # Anchor to the most recent day at or before the chosen one so gaps in
+        # the data still resolve to the last known value (matches the ffill used
+        # to build the frame); day-based columns read N/A for that day itself.
+        anchor = metrics_frame.index.asof(pd.Timestamp(chosen_day))
+        day_row = metrics_frame.loc[anchor]
+        st.caption(f"Showing measurements from {chosen_day:%b %d, %Y}.")
+    else:
+        # Day-based metrics show one of two views both precomputed at **Process
+        # data** time (see build_metric_summaries): the default is the average of
+        # the last seven complete days (today's total is still in progress and
+        # would read low); the toggle switches to the average over the whole
+        # selected period.
+        use_filtered_avg = st.toggle(
+            "Average over whole selected time period",
+            value=False,
+            key="daily_metrics_avg_filtered",
+            help="Off: day-based metrics show the 7-day average (default). "
+            "On: day-based metrics show the average across the entire selected time period.",
+        )
+        if use_filtered_avg:
+            tile_labels = {column: f"{label} (range avg)" for column, label in tile_labels.items()}
             st.caption(
                 f"Range averages cover {metrics_frame.index.min():%b %d, %Y} – "
                 f"{metrics_frame.index.max():%b %d, %Y} ({len(metrics_frame)} days of data)."
             )
+        else:
+            tile_labels = {column: f"{label} (7-day avg)" for column, label in tile_labels.items()}
     summaries = st.session_state.get("health_metrics_summaries", {})
     tiles = []
     for layer in METRIC_LAYERS:
-        if layer["column"] in DAILY_AVG_COLUMNS:
+        if view_day and day_row is not None:
+            value = day_row.get(layer["column"])
+            current_value = float(value) if pd.notna(value) else None
+        elif layer["column"] in DAILY_AVG_COLUMNS:
             current_value = summaries.get(layer["column"], {}).get("range" if use_filtered_avg else "7day")
-            tile_title = avg7_labels[layer["column"]]
         else:
             series = metrics_frame[layer["column"]].dropna() if layer["column"] in metrics_frame.columns else None
             current_value = series.iloc[-1] if series is not None and not series.empty else None
-            tile_title = layer["title"]
+        tile_title = tile_labels.get(layer["column"], layer["title"])
         tiles.append((tile_title, layer["format"](current_value)))
     # Twelve tiles in one row overflow; lay them out six per row.
     TILES_PER_ROW = 6

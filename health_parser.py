@@ -330,6 +330,38 @@ def _naive_local(value: Optional[datetime]) -> Optional[datetime]:
     return value.replace(tzinfo=None)
 
 
+def resolve_daily_steps(
+    steps_by_day: dict, watch_sources: set
+) -> list[MetricSample]:
+    """Collapse per-source step totals into one number per day.
+
+    Every device that counts steps (Watch, iPhone, ...) writes its own stream
+    of the same steps, so summing every record double-counts. Prefer a
+    watch's count for a day and fall back to the best single non-watch
+    source, which matches what the Health app displays. ``steps_by_day`` maps
+    day -> {sourceName: total}; ``watch_sources`` names the sources a record's
+    device attribute or source name identified as a watch.
+    """
+    samples: list[MetricSample] = []
+    for day, per_source in sorted(steps_by_day.items()):
+        watch_totals = [total for source, total in per_source.items() if source in watch_sources]
+        daily_total = max(watch_totals) if watch_totals else max(per_source.values())
+        samples.append(MetricSample(datetime.combine(day, time.min), daily_total))
+    return samples
+
+
+def is_watch_record(attrib: dict) -> bool:
+    """True when a record's device attribute or source names an Apple Watch.
+
+    Newer exports put the counting device in the ``device`` attribute (e.g.
+    "name:Apple Watch, ... model:Watch ..."); older ones only have the
+    source name. Either signal is enough to identify watch data generically,
+    without relying on any user-specific device naming.
+    """
+    haystack = f"{attrib.get('device') or ''} {attrib.get('sourceName') or ''}".lower()
+    return "watch" in haystack
+
+
 def parse_health_metrics(
     export_path: str | Path,
     range_start: Optional[date] = None,
@@ -416,7 +448,8 @@ def parse_health_metrics(
         xml_events = ET.iterparse(export_path, events=("end",))
 
     sleep_hours_by_day: dict = {}
-    steps_by_day: dict = {}
+    steps_by_day: dict = {}  # date -> {sourceName: steps}
+    steps_watch_sources: set = set()
     walk_run_distance_by_day: dict = {}  # date -> {sourceName: meters}
     move_energy_by_day: dict = {}  # date -> {sourceName: kcal}
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
@@ -485,7 +518,14 @@ def parse_health_metrics(
             value = parse_numeric(elem.attrib.get("value"))
             if start is not None and value:
                 end_dt = end if (end is not None and end > start) else start
-                _distribute_across_days(steps_by_day, start, end_dt, float(value))
+                distributed: dict = {}
+                _distribute_across_days(distributed, start, end_dt, float(value))
+                source = elem.attrib.get("sourceName") or "unknown"
+                if is_watch_record(elem.attrib):
+                    steps_watch_sources.add(source)
+                for day, share in distributed.items():
+                    per_source = steps_by_day.setdefault(day, {})
+                    per_source[source] = per_source.get(source, 0.0) + share
         elif record_type == "distancewalkingrunning":
             if not _day_in_range(start.date() if start else None):
                 elem.clear()
@@ -553,10 +593,7 @@ def parse_health_metrics(
         MetricSample(datetime.combine(day, time.min), hours)
         for day, hours in sorted(sleep_hours_by_day.items())
     ]
-    metrics["steps"] = [
-        MetricSample(datetime.combine(day, time.min), steps)
-        for day, steps in sorted(steps_by_day.items())
-    ]
+    metrics["steps"] = resolve_daily_steps(steps_by_day, steps_watch_sources)
     # Each device (Watch, iPhone) writes its own samples for the same day, so
     # summing every source double counts. Keep the best single-source total per
     # day, matching what the Health app shows.
@@ -953,7 +990,8 @@ def parse_export_all(
         xml_events = ET.iterparse(export_path, events=("end",))
 
     sleep_hours_by_day: dict = {}
-    steps_by_day: dict = {}
+    steps_by_day: dict = {}  # date -> {sourceName: steps}
+    steps_watch_sources: set = set()
     walk_run_distance_by_day: dict = {}  # date -> {sourceName: meters}
     move_energy_by_day: dict = {}  # date -> {sourceName: kcal}
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
@@ -1045,7 +1083,14 @@ def parse_export_all(
                             value = parse_numeric(attrib.get("value"))
                             if start is not None and value:
                                 end_dt = end if (end is not None and end > start) else start
-                                _distribute_across_days(steps_by_day, start, end_dt, float(value))
+                                distributed: dict = {}
+                                _distribute_across_days(distributed, start, end_dt, float(value))
+                                source = attrib.get("sourceName") or "unknown"
+                                if is_watch_record(attrib):
+                                    steps_watch_sources.add(source)
+                                for day, share in distributed.items():
+                                    per_source = steps_by_day.setdefault(day, {})
+                                    per_source[source] = per_source.get(source, 0.0) + share
                     elif record_type == "distancewalkingrunning":
                         if _day_in_range(start.date() if start else None):
                             record_counts["distancewalkingrunning"] += 1
@@ -1250,10 +1295,7 @@ def parse_export_all(
         MetricSample(datetime.combine(day, time.min), hours)
         for day, hours in sorted(sleep_hours_by_day.items())
     ]
-    metrics["steps"] = [
-        MetricSample(datetime.combine(day, time.min), steps)
-        for day, steps in sorted(steps_by_day.items())
-    ]
+    metrics["steps"] = resolve_daily_steps(steps_by_day, steps_watch_sources)
     metrics["walk_run_distance_m"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(walk_run_distance_by_day.items())
