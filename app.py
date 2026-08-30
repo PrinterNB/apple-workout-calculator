@@ -1,41 +1,61 @@
 from __future__ import annotations
 
+import math
 import os
 import subprocess
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import folium
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 
 from health_parser import (
+    MetricSample,
     RouteRecord,
     WorkoutRecord,
     match_route_to_workout,
+    parse_export_all,
     parse_route_directory,
-    parse_workout_export,
     route_distance_meters,
     route_speeds_mph,
     route_times,
+    set_progress_callback,
 )
 
 
-DATA_PARSER_VERSION = 10
+DATA_PARSER_VERSION = 20
 
 st.set_page_config(page_title="Apple Workout Calculator", layout="wide")
 
 
 @st.cache_data(show_spinner=False)
-def load_workouts(export_path: str, file_signature: float | None) -> list[WorkoutRecord]:
-    return parse_workout_export(export_path)
+def load_export(
+    export_path: str | Path,
+    file_signature: float | None,
+    range_start: date | None,
+    range_end: date | None,
+) -> tuple[list[WorkoutRecord], dict[str, list[MetricSample]], dict[str, int]]:
+    """Workouts and health metrics for the selected range.
+
+    export.xml is not date-sorted, so even a narrow range streams the whole
+    file; the per-range result is memoized by st.cache_data for the session.
+    """
+    return parse_export_all(export_path, range_start, range_end)
 
 
 @st.cache_data(show_spinner=False)
-def load_routes(route_dir: str, file_signature: float | None) -> list[RouteRecord]:
-    return parse_route_directory(route_dir)
+def load_routes(
+    route_dir: str | Path,
+    file_signature: float | None,
+    range_start: date | None,
+    range_end: date | None,
+) -> list[RouteRecord]:
+    return parse_route_directory(route_dir, range_start, range_end)
 
 
 def file_signature(path: str | Path | None) -> float | None:
@@ -67,6 +87,74 @@ def folder_size_bytes(folder: str, export_signature: float | None, route_signatu
     except OSError:
         return 0
     return total
+
+
+def format_eta(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+class ParseProgressUI:
+    """Progress bar + live ETA caption covering the export processing stages."""
+
+    def __init__(self, labels: list[str]):
+        self.labels = labels
+        self.current = -1
+        self.completed = 0
+        self.stage_started = 0.0
+        self.last_report = 0.0
+        self.bar: st.delta_generator.DeltaGenerator | None = None
+        self.status: st.delta_generator.DeltaGenerator | None = None
+
+    def render(self) -> "ParseProgressUI":
+        self.bar = st.progress(0.0)
+        self.status = st.empty()
+        return self
+
+    def begin_stage(self, index: int) -> None:
+        self.current = index
+        self.stage_started = time.monotonic()
+
+    def report(self, done: int, total: int) -> None:
+        """Called from the parsers via the progress callback (throttled to ~3x/second)."""
+        now = time.monotonic()
+        if now - self.last_report < 0.35 and done < total:
+            return
+        self.last_report = now
+        label = self.labels[self.current] if 0 <= self.current < len(self.labels) else "Processing"
+        text = f"**{label}** — {done:,} / {total:,}"
+        elapsed = now - self.stage_started
+        if total and 0 < done < total and elapsed > 0:
+            text += f" — about {format_eta((total - done) * elapsed / done)} left"
+        self.status.markdown(text)
+        fraction = min(1.0, done / total) if total else 0.0
+        self.bar.progress(min((self.completed + fraction) / len(self.labels), 0.995))
+
+    def finish_stage(self) -> None:
+        self.completed = self.current + 1
+        self.bar.progress(min(1.0, self.completed / len(self.labels)))
+
+    def dispose(self) -> None:
+        if self.bar is not None:
+            self.bar.progress(1.0)
+            self.bar.empty()
+        if self.status is not None:
+            self.status.empty()
+
+
+def coerce_to_date(value: object) -> date:
+    """Normalize the loose values st.date_input returns (date, datetime, ISO string)."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
 
 
 def format_bytes(value: int) -> str:
@@ -144,15 +232,18 @@ def workouts_to_frame(workouts: list[WorkoutRecord]) -> pd.DataFrame:
 
 def apply_filters(
     df: pd.DataFrame,
-    start_date: date,
-    end_date: date,
+    start_date: date | None,
+    end_date: date | None,
     selected_types: list[str] | None = None,
 ) -> pd.DataFrame:
     if df.empty:
         return df
     filtered = df.copy()
     if "start_date_local_date" in filtered.columns:
-        filtered = filtered[filtered["start_date_local_date"].between(start_date, end_date)]
+        if start_date is not None:
+            filtered = filtered[filtered["start_date_local_date"] >= start_date]
+        if end_date is not None:
+            filtered = filtered[filtered["start_date_local_date"] <= end_date]
     if selected_types is not None:
         filtered = filtered[filtered["activity_type"].isin(selected_types)]
     return filtered.sort_values("start_date", ascending=False, na_position="last")
@@ -270,6 +361,256 @@ def create_type_totals(df: pd.DataFrame) -> pd.DataFrame:
         )
         .sort_values("total_distance_mi", ascending=False, na_position="last")
     )
+
+
+def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
+    frames: dict[str, pd.Series] = {}
+    all_days: set = set()
+    for column in (
+        "weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "sleep_hours", "steps",
+        "walk_run_distance_m", "move_energy_kcal", "exercise_minutes", "stand_hours",
+    ):
+        samples_list = samples.get(column) or []
+        if not samples_list:
+            continue
+        by_day: dict = {}
+        for sample in samples_list:  # sorted ascending, so later entries win per day
+            day = sample.timestamp.date()
+            by_day[day] = sample.value
+            all_days.add(day)
+        frames[column] = pd.Series(by_day)
+    if not frames:
+        return pd.DataFrame()
+
+    index = pd.to_datetime(sorted(all_days))
+    frame = pd.DataFrame(index=index)
+    for column in ("weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm"):
+        if column in frames:
+            frame[column] = frames[column].reindex(index, method="ffill")
+    if "sleep_hours" in frames:
+        frame["sleep_hours"] = frames["sleep_hours"].reindex(index)
+    if "steps" in frames:
+        frame["steps"] = frames["steps"].reindex(index)
+    if "walk_run_distance_m" in frames:
+        frame["walk_run_distance_m"] = frames["walk_run_distance_m"].reindex(index)
+    if "move_energy_kcal" in frames:
+        frame["move_energy_kcal"] = frames["move_energy_kcal"].reindex(index)
+    if "exercise_minutes" in frames:
+        frame["exercise_minutes"] = frames["exercise_minutes"].reindex(index)
+    if "stand_hours" in frames:
+        frame["stand_hours"] = frames["stand_hours"].reindex(index)
+
+    if "weight_kg" in frame and "height_m" in frame:
+        height = frame["height_m"]
+        frame["bmi"] = (frame["weight_kg"] / (height * height)).where(height > 0)
+    if "weight_kg" in frame and "body_fat_pct" in frame:
+        frame["lbm_kg"] = frame["weight_kg"] * (1.0 - frame["body_fat_pct"] / 100.0)
+    return frame
+
+
+# Day-based metrics that the "Current Measurements" tiles can show as either a
+# 7-day average or an average over the whole selected time period.
+DAILY_AVG_COLUMNS = (
+    "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm",
+    "move_energy_kcal", "exercise_minutes", "stand_hours",
+)
+
+
+def build_metric_summaries(samples: dict[str, list[MetricSample]]) -> dict[str, dict[str, float | None]]:
+    """Precompute both average views of every day-based metric at parse time.
+
+    Each entry maps a column to {"7day": ..., "range": ...}: the average of the
+    last seven complete days (today is excluded — its total is still in
+    progress and would read low) and the average over the whole parsed dataset,
+    which is exactly the selected time period since parsing is range-filtered.
+    Computing both up front lets the Health Metrics tab flip between them
+    instantly without re-processing the export.
+    """
+    frame = build_metrics_frame(samples)
+    today_ts = pd.Timestamp(datetime.now().date())
+    week_start = today_ts - timedelta(days=7)
+    summaries: dict[str, dict[str, float | None]] = {}
+    for column in DAILY_AVG_COLUMNS:
+        series = frame[column].dropna() if column in frame.columns else None
+        weekly = (
+            series[(series.index >= week_start) & (series.index < today_ts)] if series is not None else None
+        )
+        summaries[column] = {
+            "7day": float(weekly.mean()) if weekly is not None and not weekly.empty else None,
+            "range": float(series.mean()) if series is not None and not series.empty else None,
+        }
+    return summaries
+
+
+def format_height_m(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    total_inches = value * 39.37007874
+    feet, inches = divmod(total_inches, 12)
+    if round(inches) == 12:
+        feet += 1
+        inches = 0
+    return f"{int(feet)}' {int(round(inches))}\""
+
+
+def format_kg_as_lb(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{value * 2.2046226218:.1f} lb"
+
+
+def format_inches_ft_in(total_inches: float) -> str:
+    feet, inches = divmod(int(round(total_inches)), 12)
+    return f"{feet}' {inches}\""
+
+
+def height_tick_scale(series_inches: pd.Series) -> tuple[list[float], list[str]]:
+    """Whole-inch axis ticks (at most ~9) rendered as ft/in for the height chart."""
+    values = series_inches.dropna()
+    if values.empty:
+        return [], []
+    low, high = float(values.min()), float(values.max())
+    if high - low < 1e-6:
+        low, high = low - 1.0, high + 1.0
+    start, end = math.floor(low), math.ceil(high)
+    step = 1
+    while (end - start) // step > 8:
+        step += 1
+    tick_values: list[float] = []
+    tick_text: list[str] = []
+    value = (start // step) * step
+    while value <= end:
+        tick_values.append(float(value))
+        tick_text.append(format_inches_ft_in(value))
+        value += step
+    return tick_values, tick_text
+
+
+def height_hover_text(series_inches: pd.Series) -> list[str]:
+    return [format_inches_ft_in(float(value)) for value in series_inches]
+
+
+TREND_WINDOW_DAYS = 15  # centered rolling window for the trend overlay
+
+
+def smoothed_trendline(series: pd.Series) -> list[float]:
+    """Centered rolling mean used to overlay a smoothed trend on noisy series."""
+    return (
+        series.rolling(window=TREND_WINDOW_DAYS, center=True, min_periods=1).mean().tolist()
+    )
+
+
+def faded_color(hex_color: str, alpha: float) -> str:
+    """Returns an rgba() string so plotly can render a hex color at partial opacity."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+# One entry per toggleable chart layer. `column` keys build_metrics_frame output;
+# new measurements added later only need an entry here plus a parser hook.
+# `convert` rescales values for the chart axis (internal storage stays SI);
+# `y_title` labels the axis in the units the chart actually shows.
+METRIC_LAYERS = [
+    {
+        "column": "weight_kg",
+        "title": "Weight (lb)",
+        "color": "#2E86DE",
+        "format": format_kg_as_lb,
+        "convert": lambda value: value * 2.2046226218,
+        "y_title": "Weight (lb)",
+    },
+    {
+        "column": "body_fat_pct",
+        "title": "Body Fat (%)",
+        "color": "#E67E22",
+        "format": lambda value: f"{value:.1f}%" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Body Fat (%)",
+    },
+    {
+        "column": "bmi",
+        "title": "BMI",
+        "color": "#16A085",
+        "format": lambda value: f"{value:.1f}" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "BMI",
+    },
+    {
+        "column": "lbm_kg",
+        "title": "Lean Body Mass (lb)",
+        "color": "#D81B60",
+        "format": format_kg_as_lb,
+        "convert": lambda value: value * 2.2046226218,
+        "y_title": "Lean Body Mass (lb)",
+    },
+    {
+        "column": "height_m",
+        "title": "Height",
+        "color": "#8E44AD",
+        "format": format_height_m,
+        "convert": lambda value: value * 39.37007874,
+        "y_title": "Height (ft/in)",
+        "tick_func": height_tick_scale,
+        "hover_func": height_hover_text,
+    },
+    {
+        "column": "resting_hr_bpm",
+        "title": "Resting Heart Rate (bpm)",
+        "color": "#EF4444",
+        "format": lambda value: f"{value:.0f} bpm" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Resting Heart Rate (bpm)",
+    },
+    {
+        "column": "sleep_hours",
+        "title": "Sleep Duration (h)",
+        "color": "#2563EB",
+        "format": lambda value: f"{value:.1f} h" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Sleep Duration (h)",
+    },
+    {
+        "column": "steps",
+        "title": "Steps (day)",
+        "color": "#10B981",
+        "format": lambda value: f"{value:,.0f}" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Steps (day)",
+    },
+    {
+        "column": "walk_run_distance_m",
+        "title": "Walking + Running Distance (mi)",
+        "color": "#F59E0B",
+        "format": lambda value: f"{value * 0.000621371:.1f} mi" if value is not None and pd.notna(value) else "N/A",
+        "convert": lambda value: value * 0.000621371,
+        "y_title": "Distance (mi)",
+    },
+    {
+        "column": "move_energy_kcal",
+        "title": "Move Calories (kcal)",
+        "color": "#FF3B30",
+        "format": lambda value: f"{value:,.0f} kcal" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Move Calories (kcal)",
+    },
+    {
+        "column": "exercise_minutes",
+        "title": "Exercise (min)",
+        "color": "#64D22D",
+        "format": lambda value: f"{value:,.0f} min" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Exercise (min)",
+    },
+    {
+        "column": "stand_hours",
+        "title": "Stand (h)",
+        "color": "#00B8A9",
+        "format": lambda value: f"{value:.1f} h" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Stand (h)",
+    },
+]
 
 
 def display_metrics(df: pd.DataFrame) -> None:
@@ -573,7 +914,6 @@ with st.sidebar:
         value="",
         key="export_folder_input",
     )
-    reload_requested = st.button("Reload data")
 
 if not export_folder:
     st.info("Enter the path to the Apple Health export folder in the sidebar.")
@@ -588,8 +928,51 @@ export_path = export_root / "export.xml"
 route_dir = export_root / "workout-routes"
 folder_key = str(export_root)
 path_changed = st.session_state.get("loaded_export_folder") != folder_key
+
+with st.sidebar:
+    st.header("Time frame")
+    st.caption(
+        "Only workouts, routes, and measurements inside this range are parsed, so a "
+        "narrower range loads faster. Press Process data after changing the range."
+    )
+    today = date.today()
+    date_preset = st.selectbox(
+        "Date range preset",
+        ["Year to date", "All time", "Past year", "Custom"],
+        key="date_range_preset",
+    )
+    range_start: date | None
+    range_end: date | None
+    if date_preset == "Year to date":
+        range_start, range_end = date(today.year, 1, 1), today
+        st.caption(f"Parsing from {range_start:%Y-%m-%d} through {range_end:%Y-%m-%d}.")
+    elif date_preset == "Past year":
+        range_start, range_end = today - timedelta(days=365), today
+        st.caption(f"Parsing from {range_start:%Y-%m-%d} through {range_end:%Y-%m-%d}.")
+    elif date_preset == "All time":
+        range_start, range_end = None, None
+    else:
+        raw_range = st.date_input(
+            "Date range",
+            value=(today - timedelta(days=365), today),
+            key="custom_date_range",
+        )
+        if isinstance(raw_range, (tuple, list)) and len(raw_range) == 2:
+            range_start = coerce_to_date(raw_range[0])
+            range_end = coerce_to_date(raw_range[1])
+        else:
+            single = coerce_to_date(raw_range)
+            range_start = range_end = single
+
+    process_requested = st.button(
+        "Process data",
+        type="primary",
+        use_container_width=True,
+        help="Parse workouts, routes, and measurements from the export for the selected range. Press again after changing the folder or range.",
+    )
+
 needs_signature_check = (
-    reload_requested
+    process_requested
     or path_changed
     or "loaded_export_signature" not in st.session_state
     or "loaded_route_signature" not in st.session_state
@@ -610,20 +993,33 @@ data_size = folder_size_bytes(folder_key, export_signature, route_signature)
 with st.sidebar:
     st.metric("Export Data Size", format_bytes(data_size))
 
-needs_reload = (
-    "workouts" not in st.session_state
-    or st.session_state.get("loaded_parser_version") != DATA_PARSER_VERSION
-    or st.session_state.get("loaded_export_folder") != folder_key
-    or st.session_state.get("loaded_export_signature") != export_signature
-    or st.session_state.get("loaded_route_signature") != route_signature
-    or "route_lookup" not in st.session_state
-    or reload_requested
-)
+if process_requested:
+    progress_labels = ["Parsing export"]
+    if route_signature is not None:
+        progress_labels.append("Parsing routes")
+    progress = ParseProgressUI(progress_labels).render()
+    try:
+        set_progress_callback(progress.report)
+        progress.begin_stage(0)
+        parsed_workouts, parsed_metrics, parsed_counts = load_export(
+            export_path, export_signature, range_start, range_end
+        )
+        st.session_state["workouts"] = parsed_workouts
+        st.session_state["health_metrics"] = (parsed_metrics, parsed_counts)
+        st.session_state["health_metrics_summaries"] = build_metric_summaries(parsed_metrics)
+        progress.finish_stage()
 
-if needs_reload:
-    with st.spinner("Parsing Apple Health export..."):
-        st.session_state["workouts"] = load_workouts(export_path, export_signature)
-        st.session_state["routes"] = load_routes(route_dir, route_signature) if route_signature is not None else []
+        if route_signature is not None:
+            progress.begin_stage(1)
+            st.session_state["routes"] = load_routes(route_dir, route_signature, range_start, range_end)
+            progress.finish_stage()
+        else:
+            st.session_state["routes"] = []
+    finally:
+        set_progress_callback(None)
+        progress.dispose()
+
+    with st.spinner("Matching routes to workouts..."):
         used_route_paths: set[Path] = set()
         route_lookup: dict[str, RouteRecord] = {}
         for workout in st.session_state["workouts"]:
@@ -637,6 +1033,20 @@ if needs_reload:
         st.session_state["loaded_export_folder"] = folder_key
         st.session_state["loaded_export_signature"] = export_signature
         st.session_state["loaded_route_signature"] = route_signature
+        st.session_state["loaded_date_range"] = (range_start, range_end)
+
+if "workouts" not in st.session_state:
+    st.info("Select a date range in the sidebar and press **Process data** to load your export.")
+    st.stop()
+
+if (
+    st.session_state.get("loaded_date_range") != (range_start, range_end)
+    or st.session_state.get("loaded_export_folder") != folder_key
+    or st.session_state.get("loaded_export_signature") != export_signature
+    or st.session_state.get("loaded_route_signature") != route_signature
+    or st.session_state.get("loaded_parser_version") != DATA_PARSER_VERSION
+):
+    st.sidebar.caption("Export or date range changed — press **Process data** to re-parse.")
 
 workouts = st.session_state.get("workouts", [])
 routes = st.session_state.get("routes", [])
@@ -662,43 +1072,31 @@ if not df.empty:
 else:
     df["route_status"] = pd.Series(dtype="string")
     df["route_file"] = pd.Series(dtype="string")
+    df["pace_min_per_mi"] = pd.Series(dtype="float64")
 
 if df.empty:
-    st.warning("No workouts were parsed from the export file.")
-    st.stop()
-
-if df["total_distance_mi"].isna().all() and df["total_energy_kcal"].isna().all():
+    st.warning(
+        "No workouts fall inside the selected time frame — widen the date range in the sidebar and press Process data."
+    )
+elif df["total_distance_mi"].isna().all() and df["total_energy_kcal"].isna().all():
     st.warning(
         "This export contains no readable total distance or energy values on its Workout records. "
         "The app can still show duration and route data."
     )
 
-min_date = df["start_date_local_date"].dropna().min()
-max_date = df["start_date_local_date"].dropna().max()
+if not df.empty:
+    min_date = df["start_date_local_date"].dropna().min()
+    max_date = df["start_date_local_date"].dropna().max()
+else:
+    min_date = max_date = None
+selected_start: date | None = range_start if range_start is not None else min_date
+selected_end: date | None = range_end if range_end is not None else max_date
 
-with st.sidebar:
-    st.header("Filters")
-    today = date.today()
-    date_preset = st.selectbox("Date range preset", ["All time", "Year to date", "Past year", "Custom"])
-    if date_preset == "Year to date":
-        selected_start, selected_end = date(today.year, 1, 1), today
-        st.caption(f"Showing workouts from {selected_start:%Y-%m-%d} through {selected_end:%Y-%m-%d}.")
-    elif date_preset == "Past year":
-        selected_start, selected_end = today - timedelta(days=365), today
-        st.caption(f"Showing workouts from {selected_start:%Y-%m-%d} through {selected_end:%Y-%m-%d}.")
-    elif date_preset == "All time":
-        selected_start, selected_end = min_date, max_date
-    else:
-        default_range = (min_date, max_date) if min_date and max_date else (today, today)
-        selected_dates = st.date_input("Date range", value=default_range)
-        if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
-            selected_start, selected_end = selected_dates
-        else:
-            selected_start = selected_end = selected_dates
 date_filtered_df = apply_filters(df, selected_start, selected_end)
 available_types = sorted(date_filtered_df["activity_type"].fillna("Unknown").unique().tolist())
 
 with st.sidebar:
+    st.header("Filters")
     selected_activity_types = st.multiselect(
         "Activity types",
         options=available_types,
@@ -708,14 +1106,24 @@ with st.sidebar:
 
 filtered_df = apply_filters(df, selected_start, selected_end, selected_activity_types)
 
-tab1, tab2 = st.tabs(["Workout Accumulator", "Individual Workout Route Inspector"])
+# on_change="rerun" turns the tabs into a real session-state widget, so the
+# selected tab survives any rerun (e.g. flipping the health-metric toggle). A
+# plain stateless st.tabs remounts and snaps back to the first tab instead.
+# https://github.com/streamlit/streamlit/issues/8239
+TAB_NAMES = ["Workout Accumulator", "Individual Workout Route Inspector", "Health Metrics"]
+tab1, tab2, tab3 = st.tabs(
+    TAB_NAMES,
+    default=st.session_state.get("main_tabs", TAB_NAMES[0]),
+    key="main_tabs",
+    on_change="rerun",
+)
 
 with tab1:
     display_metrics(filtered_df)
 
     c1, c2 = st.columns([1, 1])
     with c1:
-        granularity = st.selectbox("Group accumulation by", ["Day", "Week", "Month"])
+        granularity = st.selectbox("Group accumulation by", ["Day", "Week", "Month"], index=1)
         time_grouped = create_time_grouped_frame(filtered_df, granularity)
         if time_grouped.empty:
             st.info("No workouts match the current filters.")
@@ -951,3 +1359,214 @@ with tab2:
 
         st.markdown("### Elevation / Speed / Heart Rate Over Time")
         render_elevation_profile(selected_route, selected_workout)
+
+with tab3:
+    metrics_samples, metrics_counts = st.session_state.get("health_metrics", ({}, {}))
+    metrics_frame = build_metrics_frame(metrics_samples)
+
+    if metrics_frame.empty:
+        found_counts = {name: count for name, count in metrics_counts.items() if count > 0}
+        if not found_counts:
+            st.info(
+                "No body measurement records (bodymass, bodyfatpercentage, height, "
+                "restingheart-rate, sleepanalysis, stepcount, walking/running "
+                "distance, active energy, exercise, or stand time) were found in "
+                "export.xml."
+            )
+        else:
+            summary = ", ".join(f"{name}: {count}" for name, count in sorted(found_counts.items()))
+            st.info(f"Some measurement records were found but none could be read ({summary}).")
+        st.stop()
+
+    matched = ", ".join(f"{name}: {count}" for name, count in sorted(metrics_counts.items()) if count > 0)
+    if matched:
+        st.caption(f"Measurement records matched in export.xml — {matched}")
+
+    st.subheader("Current Measurements")
+    # Day-based metrics show one of two views both precomputed at **Process data**
+    # time (see build_metric_summaries): the default is the average of the last
+    # seven complete days (today's total is still in progress and would read
+    # low); the toggle switches to the average over the whole selected period.
+    use_filtered_avg = st.toggle(
+        "Average over whole selected time period",
+        value=False,
+        key="daily_metrics_avg_filtered",
+        help="Off: day-based metrics show the 7-day average (default). "
+        "On: day-based metrics show the average across the entire selected time period.",
+    )
+    avg7_labels = {
+        "steps": "Steps (7-day avg)",
+        "walk_run_distance_m": "Walk + Run Distance (mi, 7-day avg)",
+        "sleep_hours": "Sleep Duration (h, 7-day avg)",
+        "resting_hr_bpm": "Resting Heart Rate (bpm, 7-day avg)",
+        "move_energy_kcal": "Move Calories (kcal, 7-day avg)",
+        "exercise_minutes": "Exercise (min, 7-day avg)",
+        "stand_hours": "Stand (h, 7-day avg)",
+    }
+    if use_filtered_avg:
+        avg7_labels = {column: label.replace("7-day avg", "range avg") for column, label in avg7_labels.items()}
+        if not metrics_frame.empty:
+            st.caption(
+                f"Range averages cover {metrics_frame.index.min():%b %d, %Y} – "
+                f"{metrics_frame.index.max():%b %d, %Y} ({len(metrics_frame)} days of data)."
+            )
+    summaries = st.session_state.get("health_metrics_summaries", {})
+    tiles = []
+    for layer in METRIC_LAYERS:
+        if layer["column"] in DAILY_AVG_COLUMNS:
+            current_value = summaries.get(layer["column"], {}).get("range" if use_filtered_avg else "7day")
+            tile_title = avg7_labels[layer["column"]]
+        else:
+            series = metrics_frame[layer["column"]].dropna() if layer["column"] in metrics_frame.columns else None
+            current_value = series.iloc[-1] if series is not None and not series.empty else None
+            tile_title = layer["title"]
+        tiles.append((tile_title, layer["format"](current_value)))
+    # Twelve tiles in one row overflow; lay them out six per row.
+    TILES_PER_ROW = 6
+    for row_start in range(0, len(tiles), TILES_PER_ROW):
+        tile_columns = st.columns(TILES_PER_ROW)
+        for column_slot, (tile_title, tile_value) in enumerate(tiles[row_start : row_start + TILES_PER_ROW]):
+            tile_columns[column_slot].metric(tile_title, tile_value)
+
+    range_frame = metrics_frame
+    if selected_start is not None:
+        range_frame = range_frame[range_frame.index >= pd.Timestamp(selected_start)]
+    if selected_end is not None:
+        range_frame = range_frame[range_frame.index <= pd.Timestamp(selected_end)]
+    total_walk_run_mi = (
+        float(range_frame["walk_run_distance_m"].sum()) * 0.000621371
+        if "walk_run_distance_m" in range_frame.columns
+        else 0.0
+    )
+    total_steps = int(range_frame["steps"].sum()) if "steps" in range_frame.columns else 0
+    total_sleep_h = float(range_frame["sleep_hours"].sum()) if "sleep_hours" in range_frame.columns else 0.0
+    total_move_kcal = float(range_frame["move_energy_kcal"].sum()) if "move_energy_kcal" in range_frame.columns else 0.0
+    total_exercise_min = float(range_frame["exercise_minutes"].sum()) if "exercise_minutes" in range_frame.columns else 0.0
+    total_stand_h = float(range_frame["stand_hours"].sum()) if "stand_hours" in range_frame.columns else 0.0
+    total_start = range_frame.index.min()
+    total_end = range_frame.index.max()
+    range_label = (
+        f"{total_start:%b %d, %Y} - {total_end:%b %d, %Y}"
+        if not range_frame.empty
+        else "selected time range"
+    )
+    st.subheader(f"Totals ({range_label})")
+    total_columns = st.columns(6)
+    total_columns[0].metric("Total Walk + Run Distance", f"{total_walk_run_mi:,.1f} mi")
+    total_columns[1].metric("Total Steps", f"{total_steps:,}")
+    total_columns[2].metric("Total Sleep", f"{total_sleep_h:,.1f} h")
+    total_columns[3].metric("Total Move Calories", f"{total_move_kcal:,.0f} kcal")
+    total_columns[4].metric("Total Exercise Minutes", f"{total_exercise_min:,.0f} min")
+    total_columns[5].metric("Total Stand Hours", f"{total_stand_h:,.1f} h")
+
+    st.subheader("Health Metrics Over Time")
+    available_layers = [layer for layer in METRIC_LAYERS if layer["column"] in metrics_frame.columns]
+    selected_layers = st.multiselect(
+        "Metric layers",
+        options=[layer["title"] for layer in available_layers],
+        default=[layer["title"] for layer in available_layers],
+        key="metrics_layers_multiselect",
+        help="Check or uncheck individual metrics to show or hide them on the chart.",
+    )
+    show_trendlines = st.checkbox(
+        "Trend lines (15-day smoothed)",
+        value=True,
+        key="metrics_trendlines",
+        help="Draws a smoothed trend (centered 15-day average) as the main line for each displayed metric, with the raw measurements faded in the background.",
+    )
+    selected_layer_defs = [layer for layer in available_layers if layer["title"] in selected_layers]
+    if not selected_layer_defs:
+        st.info("Select at least one metric layer to display.")
+    else:
+        filtered_metrics = metrics_frame
+        if selected_start is not None:
+            filtered_metrics = filtered_metrics[filtered_metrics.index >= pd.Timestamp(selected_start)]
+        if selected_end is not None:
+            filtered_metrics = filtered_metrics[filtered_metrics.index <= pd.Timestamp(selected_end)]
+        if filtered_metrics.empty:
+            st.info("No measurement data matches the selected date range.")
+        else:
+            from plotly.subplots import make_subplots
+
+            row_count = len(selected_layer_defs)
+            # vertical_spacing is a fraction of the FIGURE height per gap, so with 12
+            # metrics the default 0.09 leaves 11 * 0.09 = 99% for gaps and squashes
+            # every row to a few pixels. Keep total spacing under ~25% instead.
+            vertical_spacing = min(0.09, 0.25 / max(row_count - 1, 1))
+            fig = make_subplots(
+                rows=row_count,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=vertical_spacing,
+                row_heights=[1.0 / row_count] * row_count,
+            )
+            for row, layer in enumerate(selected_layer_defs, start=1):
+                series = filtered_metrics[layer["column"]].dropna()
+                if series.empty:
+                    continue
+                convert = layer.get("convert")
+                plotted = convert(series) if convert else series
+                hover_func = layer.get("hover_func")
+                # Raw data stays the main line unless the trend overlay is on, in which case
+                # it fades into the background so the trend reads as the primary series.
+                raw_line_kwargs = {
+                    "color": layer["color"],
+                    "width": 2,
+                } if not show_trendlines else {
+                    "color": faded_color(layer["color"], 0.3),
+                    "width": 1,
+                }
+                trace_extra: dict = {}
+                if hover_func is not None:
+                    trace_extra["customdata"] = hover_func(plotted)
+                    hovertemplate = "%{x|%b %d, %Y}<br>%{customdata}<extra>" + layer["title"] + "</extra>"
+                else:
+                    hovertemplate = "%{x|%b %d, %Y}<br>%{y:.2f}<extra>" + layer["title"] + "</extra>"
+                fig.add_trace(
+                    go.Scatter(
+                        x=series.index,
+                        y=plotted.values,
+                        mode="lines+markers",
+                        name=layer["title"],
+                        line=dict(**raw_line_kwargs),
+                        marker=dict(
+                            size=5 if not show_trendlines else 3,
+                            color=layer["color"] if not show_trendlines else faded_color(layer["color"], 0.4),
+                        ),
+                        hovertemplate=hovertemplate,
+                        **trace_extra,
+                    ),
+                    row=row,
+                    col=1,
+                )
+                axis_kwargs: dict = {"title": layer["y_title"]}
+                tick_func = layer.get("tick_func")
+                if tick_func is not None:
+                    tick_values, tick_text = tick_func(plotted)
+                    if tick_values:
+                        axis_kwargs.update(tickvals=tick_values, ticktext=tick_text)
+                fig.update_yaxes(row=row, col=1, **axis_kwargs)
+
+                if show_trendlines and series.shape[0] >= 2:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=series.index,
+                            y=smoothed_trendline(plotted),
+                            mode="lines",
+                            name=layer["title"] + " trend",
+                            line=dict(color=layer["color"], width=2),
+                            hovertemplate="%{x|%b %d, %Y}<br>Trend: %{y:.2f}<extra>"
+                            + layer["title"]
+                            + "</extra>",
+                        ),
+                        row=row,
+                        col=1,
+                    )
+            fig.update_layout(
+                template="plotly_white",
+                height=240 * row_count + 60,
+                margin=dict(l=10, r=10, t=30, b=10),
+                legend=dict(visible=False),
+            )
+            fig.update_xaxes(title="Date", row=row_count, col=1)
+            st.plotly_chart(fig, width="stretch")

@@ -2,5 +2,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Per-machine Claude Code settings (the shared .claude/settings.json, if any, stays tracked)
+.claude/settings.local.json
+
 .DS_Store
 Thumbs.db

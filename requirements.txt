@@ -1,7 +1,6 @@
 streamlit
 pandas
 plotly
-pydeck
-gpxpy
 folium
+gpxpy
 lxml
