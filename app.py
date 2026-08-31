@@ -549,14 +549,24 @@ def build_streak_records(df: pd.DataFrame, metrics_frame: pd.DataFrame) -> list[
                     date_label += f" ({streak_types})"
                 records.append(("Longest Workout Streak", f"{length} days", date_label))
 
-    if metrics_frame is not None and not metrics_frame.empty and "steps" in metrics_frame.columns:
-        step_series = metrics_frame["steps"].dropna()
-        step_days = list(step_series.index[step_series > 0])
-        if step_days:
-            length = longest_streak_length(step_days)
-            if length:
-                streak = best_streak_days(step_days, length)
-                records.append(("Longest Step Streak", f"{length} days", format_date_short(streak[-1])))
+    # Health-metric streaks: longest run of consecutive days meeting a daily threshold.
+    metric_streak_specs = (
+        ("exercise_minutes", 30.0, "Longest Exercise Streak"),
+        ("stand_hours", 12.0, "Longest Stand Streak"),
+    )
+    if metrics_frame is not None and not metrics_frame.empty:
+        for column, threshold, label in metric_streak_specs:
+            if column not in metrics_frame.columns:
+                continue
+            # NaN days (no data) compare False, so this is the non-null days at/above the threshold.
+            qualified_index = pd.DatetimeIndex(metrics_frame.index)[metrics_frame[column] >= threshold]
+            days = sorted(qualified_index.date)
+            if not days:
+                continue
+            length = longest_streak_length(days)
+            streak = best_streak_days(days, length)
+            records.append((label, f"{length} days", format_date_short(streak[-1])))
+
     return records
 
 

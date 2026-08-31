@@ -115,7 +115,7 @@ Weight, body fat, height, and resting heart rate are carried forward to later da
 A trophy shelf of daily and all-time records, computed from the current date range and activity-type filters and shown as rows of stat tiles (each tile carries the date the record was set, plus the workout type(s) involved — e.g. `Jan 02, 2026 (Running)` for a single workout, or all the types done that day / across the streak for daily and streak records). Sections:
 
 - **Workout Records (best single workout)** — longest duration, farthest distance, fastest pace, most total calories, most active calories, highest average heart rate
-- **Streaks (consecutive days)** — longest run of consecutive days with a workout, and longest run of consecutive days with steps
+- **Streaks (consecutive days)** — longest run of consecutive days with a workout, with 30+ minutes of exercise, and with 12+ stand hours
 - **Most in a Day (workouts)** — most workouts, hours, distance, and calories in a single day
 - **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep and most stand hours
 - **Best Body Measurements (lowest)** — lowest weight, lowest body fat, best (lowest) BMI, and lowest resting heart rate
