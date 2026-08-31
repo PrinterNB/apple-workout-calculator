@@ -362,6 +362,30 @@ def is_watch_record(attrib: dict) -> bool:
     return "watch" in haystack
 
 
+def resolve_daily_total_energy(
+    move_by_day: dict, basal_by_day: dict
+) -> list[MetricSample]:
+    """Combine per-source active and resting energy into a daily total.
+
+    Apple Health's "total calories burned" is active (Move) plus resting
+    (basal) energy, and every device writes its own streams of both, so summing
+    every record double-counts. Each device's two streams add together, then the
+    best single device's combined total wins the day — the same "best single
+    source" rule the other daily metrics use. ``move_by_day`` and ``basal_by_day``
+    each map day -> {sourceName: kcal}.
+    """
+    samples: list[MetricSample] = []
+    for day in sorted(set(move_by_day) | set(basal_by_day)):
+        move_src = move_by_day.get(day, {})
+        basal_src = basal_by_day.get(day, {})
+        per_source = {
+            source: move_src.get(source, 0.0) + basal_src.get(source, 0.0)
+            for source in set(move_src) | set(basal_src)
+        }
+        samples.append(MetricSample(datetime.combine(day, time.min), max(per_source.values())))
+    return samples
+
+
 def parse_health_metrics(
     export_path: str | Path,
     range_start: Optional[date] = None,
@@ -385,6 +409,7 @@ def parse_health_metrics(
         "steps": [],
         "walk_run_distance_m": [],
         "move_energy_kcal": [],
+        "total_energy_kcal": [],
         "exercise_minutes": [],
         "stand_hours": [],
     }
@@ -397,8 +422,9 @@ def parse_health_metrics(
         "stepcount": 0,
         "distancewalkingrunning": 0,
         "activeenergyburned": 0,
+        "basalenergyburned": 0,
         "appleexercisetime": 0,
-        "applestandtime": 0,
+        "standhours": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -452,8 +478,9 @@ def parse_health_metrics(
     steps_watch_sources: set = set()
     walk_run_distance_by_day: dict = {}  # date -> {sourceName: meters}
     move_energy_by_day: dict = {}  # date -> {sourceName: kcal}
+    basal_energy_by_day: dict = {}  # date -> {sourceName: kcal}
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
-    stand_by_day: dict = {}  # date -> {sourceName: minutes}
+    stand_by_day: dict = {}  # date -> {sourceName: hours}
 
     progress_total: Optional[int] = None
     progress_stride = 1
@@ -550,6 +577,18 @@ def parse_health_metrics(
                     source = elem.attrib.get("sourceName") or "unknown"
                     by_source = move_energy_by_day.setdefault(start.date(), {})
                     by_source[source] = by_source.get(source, 0.0) + kcal
+        elif record_type == "basalenergyburned":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["basalenergyburned"] += 1
+            value = parse_numeric(elem.attrib.get("value"))
+            if start and value:
+                kcal = normalize_energy_kcal(float(value), elem.attrib.get("unit"))
+                if kcal is not None:
+                    source = elem.attrib.get("sourceName") or "unknown"
+                    by_source = basal_energy_by_day.setdefault(start.date(), {})
+                    by_source[source] = by_source.get(source, 0.0) + kcal
         elif record_type == "appleexercisetime":
             if not _day_in_range(start.date() if start else None):
                 elem.clear()
@@ -561,17 +600,18 @@ def parse_health_metrics(
                 source = elem.attrib.get("sourceName") or "unknown"
                 by_source = exercise_by_day.setdefault(start.date(), {})
                 by_source[source] = by_source.get(source, 0.0) + minutes
-        elif record_type == "applestandtime":
+        elif record_type == "applestandhour":
+            # The blue ring: one record per hour the user stood in, so the
+            # daily total is simply the count of such records (not the
+            # AppleStandTime "minutes on feet" quantity).
             if not _day_in_range(start.date() if start else None):
                 elem.clear()
                 continue
-            record_counts["applestandtime"] += 1
-            value = parse_numeric(elem.attrib.get("value"))
-            if start and value:
-                minutes = normalize_duration(float(value), elem.attrib.get("unit")) / 60.0
+            record_counts["standhours"] += 1
+            if start and "stood" in (elem.attrib.get("value") or "").lower():
                 source = elem.attrib.get("sourceName") or "unknown"
                 by_source = stand_by_day.setdefault(start.date(), {})
-                by_source[source] = by_source.get(source, 0.0) + minutes
+                by_source[source] = by_source.get(source, 0.0) + 1.0
         elif record_type.startswith("sleepanalysis"):
             if not _sleep_in_range(start, end):
                 elem.clear()
@@ -605,12 +645,13 @@ def parse_health_metrics(
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(move_energy_by_day.items())
     ]
+    metrics["total_energy_kcal"] = resolve_daily_total_energy(move_energy_by_day, basal_energy_by_day)
     metrics["exercise_minutes"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(exercise_by_day.items())
     ]
     metrics["stand_hours"] = [
-        MetricSample(datetime.combine(day, time.min), max(by_source.values()) / 60.0)
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(stand_by_day.items())
     ]
     for samples in metrics.values():
@@ -901,6 +942,7 @@ def parse_export_all(
         "steps": [],
         "walk_run_distance_m": [],
         "move_energy_kcal": [],
+        "total_energy_kcal": [],
         "exercise_minutes": [],
         "stand_hours": [],
     }
@@ -913,8 +955,9 @@ def parse_export_all(
         "stepcount": 0,
         "distancewalkingrunning": 0,
         "activeenergyburned": 0,
+        "basalenergyburned": 0,
         "appleexercisetime": 0,
-        "applestandtime": 0,
+        "standhours": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -994,8 +1037,9 @@ def parse_export_all(
     steps_watch_sources: set = set()
     walk_run_distance_by_day: dict = {}  # date -> {sourceName: meters}
     move_energy_by_day: dict = {}  # date -> {sourceName: kcal}
+    basal_energy_by_day: dict = {}  # date -> {sourceName: kcal}
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
-    stand_by_day: dict = {}  # date -> {sourceName: minutes}
+    stand_by_day: dict = {}  # date -> {sourceName: hours}
     type_cache: dict[str, str] = {}
 
     progress_total: Optional[int] = None
@@ -1035,7 +1079,7 @@ def parse_export_all(
                     "stepcount",
                     "distancewalkingrunning",
                     "appleexercisetime",
-                    "applestandtime",
+                    "applestandhour",
                 )
                 or record_type.startswith(("restingheart", "sleepanalysis"))
             ):
@@ -1110,15 +1154,15 @@ def parse_export_all(
                                 source = attrib.get("sourceName") or "unknown"
                                 by_source = exercise_by_day.setdefault(start.date(), {})
                                 by_source[source] = by_source.get(source, 0.0) + minutes
-                    elif record_type == "applestandtime":
+                    elif record_type == "applestandhour":
+                        # The blue ring: one record per hour stood, so the daily
+                        # total is the count of such records.
                         if _day_in_range(start.date() if start else None):
-                            record_counts["applestandtime"] += 1
-                            value = parse_numeric(attrib.get("value"))
-                            if start and value:
-                                minutes = normalize_duration(float(value), attrib.get("unit")) / 60.0
+                            record_counts["standhours"] += 1
+                            if start and "stood" in (attrib.get("value") or "").lower():
                                 source = attrib.get("sourceName") or "unknown"
                                 by_source = stand_by_day.setdefault(start.date(), {})
-                                by_source[source] = by_source.get(source, 0.0) + minutes
+                                by_source[source] = by_source.get(source, 0.0) + 1.0
                     elif record_type.startswith("sleepanalysis"):
                         if _sleep_in_range(start, end):
                             record_counts["sleepanalysis"] += 1
@@ -1165,6 +1209,12 @@ def parse_export_all(
                             energy_value = normalize_energy_kcal(sample_value, attrib.get("unit", "kcal"))
                             if energy_value is not None:
                                 basal_energy_samples.append((sample_time, energy_value))
+                                day = sample_time.date()
+                                if _day_in_range(day):
+                                    record_counts["basalenergyburned"] += 1
+                                    source = attrib.get("sourceName") or "unknown"
+                                    by_source = basal_energy_by_day.setdefault(day, {})
+                                    by_source[source] = by_source.get(source, 0.0) + energy_value
             elem.clear()
             continue
 
@@ -1304,12 +1354,13 @@ def parse_export_all(
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(move_energy_by_day.items())
     ]
+    metrics["total_energy_kcal"] = resolve_daily_total_energy(move_energy_by_day, basal_energy_by_day)
     metrics["exercise_minutes"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(exercise_by_day.items())
     ]
     metrics["stand_hours"] = [
-        MetricSample(datetime.combine(day, time.min), max(by_source.values()) / 60.0)
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(stand_by_day.items())
     ]
     for samples in metrics.values():

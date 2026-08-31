@@ -22,7 +22,7 @@ A Streamlit app for exploring workouts and body measurements from an Apple Healt
 - Displays elevation and calculated speed in mph over timestamped route points.
 - Displays heart rate over time when Apple Health heart-rate samples are available.
 - Displays heart rate even when a workout has no matched GPS route.
-- Tracks body measurements (weight, body fat percentage, height, resting heart rate, sleep duration, daily steps) plus daily move calories, exercise time, and stand time, and derived BMI and lean body mass, on a dedicated Health Metrics tab, with toggleable per-metric chart layers that follow the sidebar time frame. Also charts daily walking + running distance in miles from the export's `DistanceWalkingRunning` records for the selected range. Each device (Watch, iPhone) writes its own samples for the same walking, so the per-day value is the single most complete source total rather than the sum of every record — which is why it matches the Health app's own walking/running numbers.
+- Tracks body measurements (weight, body fat percentage, height, resting heart rate, sleep duration, daily steps) plus daily move calories, total calories burned, exercise time, and stand hours, and derived BMI and lean body mass, on a dedicated Health Metrics tab, with toggleable per-metric chart layers that follow the sidebar time frame. Also charts daily walking + running distance in miles from the export's `DistanceWalkingRunning` records for the selected range. Each device (Watch, iPhone) writes its own samples for the same walking, so the per-day value is the single most complete source total rather than the sum of every record — which is why it matches the Health app's own walking/running numbers.
 
 ## Requirements
 
@@ -105,7 +105,8 @@ Shows the latest available value for each tracked metric as rows of stat tiles (
 - **Walking + Running Distance (mi)** — `distancewalkingrunning` records per calendar day, in miles. Apple's Watch and iPhone both write samples of the same walking, so the day's value is the largest single-source total, which matches the Health app's own walking/running figure.
 - **Move Calories (kcal)** — `activeenergyburned` samples summed per calendar day (samples one day past the range exist only for workout backfill and are included so the daily total stays inside the selected range).
 - **Exercise (min)** — `appleexercisetime` records per calendar day; the day's value is the largest single-source total rather than a sum of every record.
-- **Stand (h)** — `applestandtime` records per calendar day, converted to hours; likewise the largest single-source total.
+- **Total Calories Burned (kcal)** — `activeenergyburned` (move) + `basalenergyburned` (resting) per calendar day; each device's two streams add together, then the best single device's combined total wins the day
+- **Stand (h)** — the blue ring: one `applestandhour` record per stood hour, so the daily total is the count of such records; likewise the largest single-source total.
 
 Weight, body fat, height, and resting heart rate are carried forward to later days so the lines stay continuous between measurements; sleep, steps, walking + running distance, move calories, exercise, and stand are only plotted on days with data. New measurements can be added later by collecting them in `parse_health_metrics` in `health_parser.py` and registering a layer in `METRIC_LAYERS` in `app.py`.
 

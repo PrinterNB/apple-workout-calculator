@@ -28,7 +28,7 @@ from health_parser import (
 )
 
 
-DATA_PARSER_VERSION = 21
+DATA_PARSER_VERSION = 23
 
 st.set_page_config(page_title="Apple Workout Calculator", layout="wide")
 
@@ -368,7 +368,8 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
     all_days: set = set()
     for column in (
         "weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "sleep_hours", "steps",
-        "walk_run_distance_m", "move_energy_kcal", "exercise_minutes", "stand_hours",
+        "walk_run_distance_m", "move_energy_kcal", "total_energy_kcal",
+        "exercise_minutes", "stand_hours",
     ):
         samples_list = samples.get(column) or []
         if not samples_list:
@@ -395,6 +396,8 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
         frame["walk_run_distance_m"] = frames["walk_run_distance_m"].reindex(index)
     if "move_energy_kcal" in frames:
         frame["move_energy_kcal"] = frames["move_energy_kcal"].reindex(index)
+    if "total_energy_kcal" in frames:
+        frame["total_energy_kcal"] = frames["total_energy_kcal"].reindex(index)
     if "exercise_minutes" in frames:
         frame["exercise_minutes"] = frames["exercise_minutes"].reindex(index)
     if "stand_hours" in frames:
@@ -412,7 +415,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
 # 7-day average or an average over the whole selected time period.
 DAILY_AVG_COLUMNS = (
     "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm",
-    "move_energy_kcal", "exercise_minutes", "stand_hours",
+    "move_energy_kcal", "total_energy_kcal", "exercise_minutes", "stand_hours",
 )
 
 
@@ -593,6 +596,14 @@ METRIC_LAYERS = [
         "format": lambda value: f"{value:,.0f} kcal" if value is not None and pd.notna(value) else "N/A",
         "convert": None,
         "y_title": "Move Calories (kcal)",
+    },
+    {
+        "column": "total_energy_kcal",
+        "title": "Total Calories Burned (kcal)",
+        "color": "#FF9500",
+        "format": lambda value: f"{value:,.0f} kcal" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Total Calories Burned (kcal)",
     },
     {
         "column": "exercise_minutes",
@@ -1370,7 +1381,7 @@ with tab3:
             st.info(
                 "No body measurement records (bodymass, bodyfatpercentage, height, "
                 "restingheart-rate, sleepanalysis, stepcount, walking/running "
-                "distance, active energy, exercise, or stand time) were found in "
+                "distance, active energy, exercise, or stand hours) were found in "
                 "export.xml."
             )
         else:
@@ -1397,6 +1408,7 @@ with tab3:
         "sleep_hours": "Sleep Duration (h)",
         "resting_hr_bpm": "Resting Heart Rate (bpm)",
         "move_energy_kcal": "Move Calories (kcal)",
+        "total_energy_kcal": "Total Calories Burned (kcal)",
         "exercise_minutes": "Exercise (min)",
         "stand_hours": "Stand (h)",
     }
@@ -1470,6 +1482,7 @@ with tab3:
     total_steps = int(range_frame["steps"].sum()) if "steps" in range_frame.columns else 0
     total_sleep_h = float(range_frame["sleep_hours"].sum()) if "sleep_hours" in range_frame.columns else 0.0
     total_move_kcal = float(range_frame["move_energy_kcal"].sum()) if "move_energy_kcal" in range_frame.columns else 0.0
+    total_total_kcal = float(range_frame["total_energy_kcal"].sum()) if "total_energy_kcal" in range_frame.columns else 0.0
     total_exercise_min = float(range_frame["exercise_minutes"].sum()) if "exercise_minutes" in range_frame.columns else 0.0
     total_stand_h = float(range_frame["stand_hours"].sum()) if "stand_hours" in range_frame.columns else 0.0
     total_start = range_frame.index.min()
@@ -1480,13 +1493,15 @@ with tab3:
         else "selected time range"
     )
     st.subheader(f"Totals ({range_label})")
-    total_columns = st.columns(6)
+    total_columns = st.columns(4)
     total_columns[0].metric("Total Walk + Run Distance", f"{total_walk_run_mi:,.1f} mi")
     total_columns[1].metric("Total Steps", f"{total_steps:,}")
     total_columns[2].metric("Total Sleep", f"{total_sleep_h:,.1f} h")
     total_columns[3].metric("Total Move Calories", f"{total_move_kcal:,.0f} kcal")
-    total_columns[4].metric("Total Exercise Minutes", f"{total_exercise_min:,.0f} min")
-    total_columns[5].metric("Total Stand Hours", f"{total_stand_h:,.1f} h")
+    total_columns_2 = st.columns(4)
+    total_columns_2[0].metric("Total Calories Burned", f"{total_total_kcal:,.0f} kcal")
+    total_columns_2[1].metric("Total Exercise Minutes", f"{total_exercise_min:,.0f} min")
+    total_columns_2[2].metric("Total Stand Hours", f"{total_stand_h:,.1f} h")
 
     st.subheader("Health Metrics Over Time")
     available_layers = [layer for layer in METRIC_LAYERS if layer["column"] in metrics_frame.columns]
