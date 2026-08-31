@@ -1,6 +1,6 @@
 # Apple Health Workout Explorer
 
-A Streamlit app for exploring workouts and body measurements from an Apple Health export. It provides aggregate workout statistics, an individual workout inspector with route maps, elevation, speed, and heart-rate profiles, and a health-metrics tab tracking body measurements over time.
+A Streamlit app for exploring workouts and body measurements from an Apple Health export. It provides aggregate workout statistics, an individual workout inspector with route maps, elevation, speed, and heart-rate profiles, a health-metrics tab tracking body measurements over time, and a records tab of daily and all-time bests.
 
 ## Features
 
@@ -43,10 +43,10 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-In the sidebar, enter the path to the extracted `apple_health_export/` folder. The app automatically finds:
+In the sidebar, enter the path to the extracted `apple_health_export/` folder — or any folder that contains it (for example the unzipped archive root), which the app walks up to three levels deep to locate `export.xml`. The app then works from the folder that actually holds `export.xml`:
 
-- `apple_health_export/export.xml`
-- `apple_health_export/workout-routes/`, when present
+- `export.xml`
+- `workout-routes/`, when present
 
 Then choose a **Time frame** in the sidebar (Year to date by default, or All time, Past year, or Custom with an explicit date range) and press **Process data**. Only workouts, routes, and health measurements inside that range are parsed, so a narrower range loads faster. Re-parse by pressing **Process data** again after changing the folder, the date range, or the export files themselves — the app shows a reminder when its settings no longer match what is loaded.
 
@@ -109,6 +109,18 @@ Shows the latest available value for each tracked metric as rows of stat tiles (
 - **Stand (h)** — the blue ring: one `applestandhour` record per stood hour, so the daily total is the count of such records; likewise the largest single-source total.
 
 Weight, body fat, height, and resting heart rate are carried forward to later days so the lines stay continuous between measurements; sleep, steps, walking + running distance, move calories, exercise, and stand are only plotted on days with data. New measurements can be added later by collecting them in `parse_health_metrics` in `health_parser.py` and registering a layer in `METRIC_LAYERS` in `app.py`.
+
+### Records
+
+A trophy shelf of daily and all-time records, computed from the current date range and activity-type filters and shown as rows of stat tiles (each tile carries the date the record was set, plus the workout type(s) involved — e.g. `Jan 02, 2026 (Running)` for a single workout, or all the types done that day / across the streak for daily and streak records). Sections:
+
+- **Workout Records (best single workout)** — longest duration, farthest distance, fastest pace, most total calories, most active calories, highest average heart rate
+- **Streaks (consecutive days)** — longest run of consecutive days with a workout, and longest run of consecutive days with steps
+- **Most in a Day (workouts)** — most workouts, hours, distance, and calories in a single day
+- **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep and most stand hours
+- **Best Body Measurements (lowest)** — lowest weight, lowest body fat, best (lowest) BMI, and lowest resting heart rate
+
+Records follow the same filtering as the other tabs, so narrowing the sidebar (date range or activity types) re-scopes them. New records can be added in the `build_*_records` functions in `app.py`.
 
 ## Route matching
 

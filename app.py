@@ -363,6 +363,216 @@ def create_type_totals(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def format_date_short(value) -> str:
+    """Compact 'Jun 14, 2026' label for a record's date; empty string if none."""
+    try:
+        if value is None or value is pd.NaT or pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if isinstance(value, datetime):
+        value = value.date()
+    return value.strftime("%b %d, %Y")
+
+
+def best_single_value(df: pd.DataFrame, column: str, ascending: bool = False):
+    """(best value, that row's local date, its activity type) for the extreme of a column, or (None, None, None)."""
+    if df.empty or column not in df.columns:
+        return None, None, None
+    sub = df.dropna(subset=[column])
+    if sub.empty:
+        return None, None, None
+    idx = sub[column].idxmin() if ascending else sub[column].idxmax()
+    row = df.loc[idx]
+    activity_type = row.get("activity_type")
+    if activity_type is None or (isinstance(activity_type, float) and math.isnan(activity_type)):
+        activity_type = None
+    return row[column], row.get("start_date_local_date"), activity_type
+
+
+def types_on_day_label(df: pd.DataFrame, day) -> str:
+    """'Walking, Running' list of the activity types done on a day, or '' if unknown."""
+    if "start_date_local_date" not in df.columns:
+        return ""
+    day_rows = df[df["start_date_local_date"] == day]
+    types = day_rows["activity_type"].dropna().unique()
+    return ", ".join(sorted(str(value) for value in types))
+
+
+def longest_streak_length(dates) -> int:
+    """Longest run of calendar days with no gaps, from an iterable of dates/timestamps."""
+    days = sorted(dates)
+    if not days:
+        return 0
+    best = current = 1
+    for previous, current_day in zip(days, days[1:]):
+        current = current + 1 if (current_day - previous).days == 1 else 1
+        best = max(best, current)
+    return best
+
+
+def best_streak_days(dates, length: int) -> list:
+    """The calendar days forming a best streak of `length` days (ending latest), or []."""
+    days = sorted(dates)
+    if not days:
+        return []
+    if length <= 1:
+        return [days[-1]]
+    current: list = []
+    best: list = []
+    for day in days:
+        if current and (day - current[-1]).days == 1:
+            current.append(day)
+        else:
+            current = [day]
+        if len(current) >= length and current[-1] >= (best[-1] if best else day):
+            best = current.copy()
+    return best
+
+
+def build_workout_records(df: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """All-time best single-workout records: (label, value, date) triples."""
+    if df.empty:
+        return []
+    specs = [
+        ("Longest Workout", "duration_seconds", False, lambda v: format_duration(v)),
+        ("Farthest Workout Distance", "total_distance_mi", False, lambda v: f"{v:.2f} mi"),
+        ("Fastest Pace", "pace_min_per_mi", True, lambda v: f"{v:.2f} min/mi"),
+        ("Most Workout Calories", "total_energy_kcal", False, lambda v: f"{v:,.0f} kcal"),
+        ("Most Active Calories", "active_energy_kcal", False, lambda v: f"{v:,.0f} kcal"),
+        ("Highest Avg Heart Rate", "average_heart_rate_bpm", False, lambda v: f"{v:,.0f} bpm"),
+    ]
+    records = []
+    for label, column, ascending, formatter in specs:
+        value, record_date, activity_type = best_single_value(df, column, ascending)
+        if value is None or pd.isna(value):
+            continue
+        date_label = format_date_short(record_date)
+        if isinstance(activity_type, str) and activity_type:
+            date_label += f" ({activity_type})"
+        records.append((label, formatter(float(value)), date_label))
+    return records
+
+
+def build_daily_workout_records(df: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Best single-day aggregates across workouts: (label, value, date) triples."""
+    if df.empty or "start_date_local_date" not in df.columns:
+        return []
+    work = df.dropna(subset=["start_date_local_date"])
+    if work.empty:
+        return []
+    by_day = work.groupby("start_date_local_date")
+    specs = [
+        ("Most Workouts in a Day", by_day.size(), lambda v: f"{v}"),
+        ("Most Workout Hours in a Day", by_day["duration_hours"].sum(min_count=1), lambda v: f"{v:.2f} h"),
+        ("Most Workout Distance in a Day", by_day["total_distance_mi"].sum(min_count=1), lambda v: f"{v:.2f} mi"),
+        ("Most Workout Calories in a Day", by_day["total_energy_kcal"].sum(min_count=1), lambda v: f"{v:,.0f} kcal"),
+    ]
+    records = []
+    for label, series, formatter in specs:
+        series = series.dropna()
+        if series.empty:
+            continue
+        idx = series.idxmax()
+        date_label = format_date_short(idx)
+        type_label = types_on_day_label(work, idx)
+        if type_label:
+            date_label += f" ({type_label})"
+        records.append((label, formatter(series[idx]), date_label))
+    return records
+
+
+def build_daily_health_records(metrics_frame: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Best single-day totals from health metrics: (label, value, date) triples."""
+    if metrics_frame is None or metrics_frame.empty:
+        return []
+    specs = [
+        ("steps", "Most Steps in a Day", lambda v: f"{v:,.0f} steps"),
+        ("walk_run_distance_m", "Most Walk + Run in a Day", lambda v: f"{v * 0.000621371:.2f} mi"),
+        ("exercise_minutes", "Most Exercise in a Day", lambda v: f"{v:,.0f} min"),
+        ("move_energy_kcal", "Most Move Calories in a Day", lambda v: f"{v:,.0f} kcal"),
+        ("total_energy_kcal", "Most Calories Burned in a Day", lambda v: f"{v:,.0f} kcal"),
+        ("sleep_hours", "Most Sleep in a Day", lambda v: f"{v:.1f} h"),
+        ("stand_hours", "Most Stand Hours in a Day", lambda v: f"{v:.0f} h"),
+    ]
+    records = []
+    for column, label, formatter in specs:
+        series = metrics_frame[column].dropna()
+        if column not in metrics_frame.columns or series.empty:
+            continue
+        idx = series.idxmax()
+        records.append((label, formatter(float(series[idx])), format_date_short(idx)))
+    return records
+
+
+def build_body_measurement_records(metrics_frame: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Best (lowest) tracked body measurements: (label, value, date) triples."""
+    if metrics_frame is None or metrics_frame.empty:
+        return []
+    specs = [
+        ("weight_kg", "Lowest Weight", lambda v: f"{v * 2.2046226218:.1f} lb"),
+        ("body_fat_pct", "Lowest Body Fat", lambda v: f"{v:.1f}%"),
+        ("bmi", "Best (Lowest) BMI", lambda v: f"{v:.1f} BMI"),
+        ("resting_hr_bpm", "Lowest Resting Heart Rate", lambda v: f"{v:.0f} bpm"),
+    ]
+    records = []
+    for column, label, formatter in specs:
+        series = metrics_frame[column].dropna()
+        if column not in metrics_frame.columns or series.empty:
+            continue
+        idx = series.idxmin()
+        records.append((label, formatter(float(series[idx])), format_date_short(idx)))
+    return records
+
+
+def build_streak_records(df: pd.DataFrame, metrics_frame: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Consecutive-day streak records: (label, value, date) triples."""
+    records = []
+    if not df.empty and "start_date_local_date" in df.columns:
+        workout_days = sorted(set(df["start_date_local_date"].dropna()))
+        if workout_days:
+            length = longest_streak_length(workout_days)
+            if length:
+                streak = best_streak_days(workout_days, length)
+                date_label = format_date_short(streak[-1])
+                # List every type done anywhere in the streak, not just the final day.
+                streak_types = (
+                    ", ".join(
+                        sorted(df[df["start_date_local_date"].isin(streak)]["activity_type"].dropna().unique())
+                    )
+                    if streak
+                    else ""
+                )
+                if streak_types:
+                    date_label += f" ({streak_types})"
+                records.append(("Longest Workout Streak", f"{length} days", date_label))
+
+    if metrics_frame is not None and not metrics_frame.empty and "steps" in metrics_frame.columns:
+        step_series = metrics_frame["steps"].dropna()
+        step_days = list(step_series.index[step_series > 0])
+        if step_days:
+            length = longest_streak_length(step_days)
+            if length:
+                streak = best_streak_days(step_days, length)
+                records.append(("Longest Step Streak", f"{length} days", format_date_short(streak[-1])))
+    return records
+
+
+def render_record_grid(records: list[tuple[str, str, str]]) -> None:
+    """Render (label, value, date) records as metric tiles, three per row."""
+    for row_start in range(0, len(records), 3):
+        chunk = records[row_start : row_start + 3]
+        cols = st.columns(3)
+        for col, (label, value, record_date) in zip(cols, chunk):
+            col.metric(label, value)
+            if record_date:
+                col.caption(record_date)
+            else:
+                col.empty()
+
+
 def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
     frames: dict[str, pd.Series] = {}
     all_days: set = set()
@@ -860,7 +1070,10 @@ def render_elevation_profile(route: RouteRecord | None, workout: WorkoutRecord) 
 
 
 st.title("Apple Health Workout Explorer")
-st.caption("Load an Apple Health export folder containing `export.xml` and, optionally, `workout-routes/`.")
+st.caption(
+    "Load an Apple Health export — point the folder at the one containing `export.xml` "
+    "(or a folder that contains it) plus an optional `workout-routes/`."
+)
 
 
 def choose_export_folder(initial_dir: Path | None = None) -> str | None:
@@ -921,9 +1134,10 @@ with st.sidebar:
         else:
             st.caption("No folder selected — you can also type the path below.")
     export_folder = st.text_input(
-        "Path to apple_health_export folder",
+        "Path to export folder",
         value="",
         key="export_folder_input",
+        help="The apple_health_export folder itself, or the folder that contains it.",
     )
 
 if not export_folder:
@@ -935,6 +1149,43 @@ if not export_root.exists() or not export_root.is_dir():
     st.error(f"Apple Health export folder not found: {export_folder}")
     st.stop()
 
+
+def resolve_export_folder(folder: Path) -> Path:
+    """Point at the folder that actually contains export.xml.
+
+    Apple Health's export zip unzips to a wrapper folder that holds
+    apple_health_export/, so accept either the export folder itself or any
+    ancestor of it. The descent is shallow (three levels) because the export
+    layout never nests deeper and a full scan of a huge export is wasteful.
+    """
+    if (folder / "export.xml").is_file():
+        return folder
+    candidates: list[Path] = []
+    stack: list[Path] = [folder]
+    for _ in range(3):
+        next_stack: list[Path] = []
+        for path in stack:
+            if (path / "export.xml").is_file():
+                candidates.append(path)
+                continue
+            try:
+                children = [child for child in path.iterdir() if child.is_dir()]
+            except OSError:
+                continue
+            next_stack.extend(children)
+        stack = next_stack
+    if not candidates:
+        return folder
+    if len(candidates) > 1:
+        # Several exports were unzipped side by side; use the newest export.xml.
+        return max(candidates, key=lambda path: (path / "export.xml").stat().st_mtime)
+    return candidates[0]
+
+
+export_root = resolve_export_folder(export_root)
+if export_root != Path(export_folder).expanduser():
+    with st.sidebar:
+        st.caption(f"Found the export nested at: {export_root}")
 export_path = export_root / "export.xml"
 route_dir = export_root / "workout-routes"
 folder_key = str(export_root)
@@ -997,7 +1248,10 @@ else:
     route_signature = st.session_state["loaded_route_signature"]
 
 if export_signature is None:
-    st.error(f"export.xml not found in: {export_root}")
+    st.error(
+        f"export.xml not found in {export_root} or any subfolder. "
+        "Point the folder input at the export folder (the one containing apple_health_export/)."
+    )
     st.stop()
 
 data_size = folder_size_bytes(folder_key, export_signature, route_signature)
@@ -1121,8 +1375,8 @@ filtered_df = apply_filters(df, selected_start, selected_end, selected_activity_
 # selected tab survives any rerun (e.g. flipping the health-metric toggle). A
 # plain stateless st.tabs remounts and snaps back to the first tab instead.
 # https://github.com/streamlit/streamlit/issues/8239
-TAB_NAMES = ["Workout Accumulator", "Individual Workout Route Inspector", "Health Metrics"]
-tab1, tab2, tab3 = st.tabs(
+TAB_NAMES = ["Workout Accumulator", "Individual Workout Route Inspector", "Health Metrics", "Records"]
+tab1, tab2, tab3, tab4 = st.tabs(
     TAB_NAMES,
     default=st.session_state.get("main_tabs", TAB_NAMES[0]),
     key="main_tabs",
@@ -1614,3 +1868,30 @@ with tab3:
             )
             fig.update_xaxes(title="Date", row=row_count, col=1)
             st.plotly_chart(fig, width="stretch")
+
+with tab4:
+    st.subheader("Records")
+    st.caption(
+        "Best single-workout, most-in-a-day, streak, and best-body-measurement records, "
+        "computed from the current date range and activity-type filters."
+    )
+
+    records_metrics_frame = build_metrics_frame(st.session_state.get("health_metrics", ({}, {}))[0])
+
+    sections = [
+        ("Workout Records (best single workout)", build_workout_records(filtered_df)),
+        ("Streaks (consecutive days)", build_streak_records(filtered_df, records_metrics_frame)),
+        ("Most in a Day (workouts)", build_daily_workout_records(filtered_df)),
+        ("Most in a Day (health)", build_daily_health_records(records_metrics_frame)),
+        ("Best Body Measurements (lowest)", build_body_measurement_records(records_metrics_frame)),
+    ]
+
+    shown_any = False
+    for title, records in sections:
+        if records:
+            st.markdown(f"#### {title}")
+            render_record_grid(records)
+            shown_any = True
+
+    if not shown_any:
+        st.info("No data available for the current filters. Widen the date range or activity types in the sidebar.")
