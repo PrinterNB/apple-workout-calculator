@@ -107,8 +107,9 @@ Shows the latest available value for each tracked metric as rows of stat tiles (
 - **Exercise (min)** — `appleexercisetime` records per calendar day; the day's value is the largest single-source total rather than a sum of every record.
 - **Total Calories Burned (kcal)** — `activeenergyburned` (move) + `basalenergyburned` (resting) per calendar day; each device's two streams add together, then the best single device's combined total wins the day
 - **Stand (h)** — the blue ring: one `applestandhour` record per stood hour, so the daily total is the count of such records; likewise the largest single-source total.
+- **Flights Climbed (day)** — `flightsclimbed` records summed per calendar day; likewise the largest single-source total.
 
-Weight, body fat, height, and resting heart rate are carried forward to later days so the lines stay continuous between measurements; sleep, steps, walking + running distance, move calories, exercise, and stand are only plotted on days with data. New measurements can be added later by collecting them in `parse_health_metrics` in `health_parser.py` and registering a layer in `METRIC_LAYERS` in `app.py`.
+Weight, body fat, height, and resting heart rate are carried forward to later days so the lines stay continuous between measurements; sleep, steps, walking + running distance, move calories, exercise, stand, and flights climbed are only plotted on days with data. New measurements can be added later by collecting them in `parse_health_metrics` in `health_parser.py` and registering a layer in `METRIC_LAYERS` in `app.py`.
 
 ### Records
 
@@ -117,7 +118,7 @@ A trophy shelf of daily and all-time records, computed from the current date ran
 - **Workout Records (best single workout)** — longest duration, farthest distance, fastest pace, most total calories, most active calories, highest average heart rate
 - **Streaks (consecutive days)** — longest run of consecutive days with a workout, with 30+ minutes of exercise, and with 12+ stand hours
 - **Most in a Day (workouts)** — most workouts, hours, distance, and calories in a single day
-- **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep and most stand hours
+- **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep, most stand hours, and most flights climbed
 - **Best Body Measurements (lowest)** — lowest weight, lowest body fat, best (lowest) BMI, and lowest resting heart rate
 
 Records follow the same filtering as the other tabs, so narrowing the sidebar (date range or activity types) re-scopes them. New records can be added in the `build_*_records` functions in `app.py`.

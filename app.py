@@ -496,11 +496,14 @@ def build_daily_health_records(metrics_frame: pd.DataFrame) -> list[tuple[str, s
         ("total_energy_kcal", "Most Calories Burned in a Day", lambda v: f"{v:,.0f} kcal"),
         ("sleep_hours", "Most Sleep in a Day", lambda v: f"{v:.1f} h"),
         ("stand_hours", "Most Stand Hours in a Day", lambda v: f"{v:.0f} h"),
+        ("flights_climbed", "Most Flights Climbed in a Day", lambda v: f"{v:,.0f} flights"),
     ]
     records = []
     for column, label, formatter in specs:
+        if column not in metrics_frame.columns:
+            continue
         series = metrics_frame[column].dropna()
-        if column not in metrics_frame.columns or series.empty:
+        if series.empty:
             continue
         idx = series.idxmax()
         records.append((label, formatter(float(series[idx])), format_date_short(idx)))
@@ -519,8 +522,10 @@ def build_body_measurement_records(metrics_frame: pd.DataFrame) -> list[tuple[st
     ]
     records = []
     for column, label, formatter in specs:
+        if column not in metrics_frame.columns:
+            continue
         series = metrics_frame[column].dropna()
-        if column not in metrics_frame.columns or series.empty:
+        if series.empty:
             continue
         idx = series.idxmin()
         records.append((label, formatter(float(series[idx])), format_date_short(idx)))
@@ -589,7 +594,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
     for column in (
         "weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "sleep_hours", "steps",
         "walk_run_distance_m", "move_energy_kcal", "total_energy_kcal",
-        "exercise_minutes", "stand_hours",
+        "exercise_minutes", "stand_hours", "flights_climbed",
     ):
         samples_list = samples.get(column) or []
         if not samples_list:
@@ -622,6 +627,8 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
         frame["exercise_minutes"] = frames["exercise_minutes"].reindex(index)
     if "stand_hours" in frames:
         frame["stand_hours"] = frames["stand_hours"].reindex(index)
+    if "flights_climbed" in frames:
+        frame["flights_climbed"] = frames["flights_climbed"].reindex(index)
 
     if "weight_kg" in frame and "height_m" in frame:
         height = frame["height_m"]
@@ -636,6 +643,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
 DAILY_AVG_COLUMNS = (
     "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm",
     "move_energy_kcal", "total_energy_kcal", "exercise_minutes", "stand_hours",
+    "flights_climbed",
 )
 
 
@@ -840,6 +848,14 @@ METRIC_LAYERS = [
         "format": lambda value: f"{value:.1f} h" if value is not None and pd.notna(value) else "N/A",
         "convert": None,
         "y_title": "Stand (h)",
+    },
+    {
+        "column": "flights_climbed",
+        "title": "Flights Climbed (day)",
+        "color": "#607D8B",
+        "format": lambda value: f"{value:,.0f}" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Flights Climbed (day)",
     },
 ]
 
@@ -1645,8 +1661,8 @@ with tab3:
             st.info(
                 "No body measurement records (bodymass, bodyfatpercentage, height, "
                 "restingheart-rate, sleepanalysis, stepcount, walking/running "
-                "distance, active energy, exercise, or stand hours) were found in "
-                "export.xml."
+                "distance, active energy, exercise, stand hours, or flights "
+                "climbed) were found in export.xml."
             )
         else:
             summary = ", ".join(f"{name}: {count}" for name, count in sorted(found_counts.items()))
@@ -1675,6 +1691,7 @@ with tab3:
         "total_energy_kcal": "Total Calories Burned (kcal)",
         "exercise_minutes": "Exercise (min)",
         "stand_hours": "Stand (h)",
+        "flights_climbed": "Flights Climbed",
     }
     if view_day:
         # Calendar picker, same widget as the custom range in the sidebar, bounded
@@ -1749,6 +1766,7 @@ with tab3:
     total_total_kcal = float(range_frame["total_energy_kcal"].sum()) if "total_energy_kcal" in range_frame.columns else 0.0
     total_exercise_min = float(range_frame["exercise_minutes"].sum()) if "exercise_minutes" in range_frame.columns else 0.0
     total_stand_h = float(range_frame["stand_hours"].sum()) if "stand_hours" in range_frame.columns else 0.0
+    total_flights = int(range_frame["flights_climbed"].sum()) if "flights_climbed" in range_frame.columns else 0
     total_start = range_frame.index.min()
     total_end = range_frame.index.max()
     range_label = (
@@ -1766,6 +1784,7 @@ with tab3:
     total_columns_2[0].metric("Total Calories Burned", f"{total_total_kcal:,.0f} kcal")
     total_columns_2[1].metric("Total Exercise Minutes", f"{total_exercise_min:,.0f} min")
     total_columns_2[2].metric("Total Stand Hours", f"{total_stand_h:,.1f} h")
+    total_columns_2[3].metric("Total Flights Climbed", f"{total_flights:,}")
 
     st.subheader("Health Metrics Over Time")
     available_layers = [layer for layer in METRIC_LAYERS if layer["column"] in metrics_frame.columns]

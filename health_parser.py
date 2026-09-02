@@ -412,6 +412,7 @@ def parse_health_metrics(
         "total_energy_kcal": [],
         "exercise_minutes": [],
         "stand_hours": [],
+        "flights_climbed": [],
     }
     record_counts: dict[str, int] = {
         "bodymass": 0,
@@ -425,6 +426,7 @@ def parse_health_metrics(
         "basalenergyburned": 0,
         "appleexercisetime": 0,
         "standhours": 0,
+        "flightsclimbed": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -481,6 +483,7 @@ def parse_health_metrics(
     basal_energy_by_day: dict = {}  # date -> {sourceName: kcal}
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
     stand_by_day: dict = {}  # date -> {sourceName: hours}
+    flights_by_day: dict = {}  # date -> {sourceName: flights}
 
     progress_total: Optional[int] = None
     progress_stride = 1
@@ -612,6 +615,16 @@ def parse_health_metrics(
                 source = elem.attrib.get("sourceName") or "unknown"
                 by_source = stand_by_day.setdefault(start.date(), {})
                 by_source[source] = by_source.get(source, 0.0) + 1.0
+        elif record_type == "flightsclimbed":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["flightsclimbed"] += 1
+            value = parse_numeric(elem.attrib.get("value"))
+            if start and value:
+                source = elem.attrib.get("sourceName") or "unknown"
+                by_source = flights_by_day.setdefault(start.date(), {})
+                by_source[source] = by_source.get(source, 0.0) + float(value)
         elif record_type.startswith("sleepanalysis"):
             if not _sleep_in_range(start, end):
                 elem.clear()
@@ -653,6 +666,10 @@ def parse_health_metrics(
     metrics["stand_hours"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(stand_by_day.items())
+    ]
+    metrics["flights_climbed"] = [
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
+        for day, by_source in sorted(flights_by_day.items())
     ]
     for samples in metrics.values():
         samples.sort(key=lambda sample: sample.timestamp)
@@ -945,6 +962,7 @@ def parse_export_all(
         "total_energy_kcal": [],
         "exercise_minutes": [],
         "stand_hours": [],
+        "flights_climbed": [],
     }
     record_counts: dict[str, int] = {
         "bodymass": 0,
@@ -958,6 +976,7 @@ def parse_export_all(
         "basalenergyburned": 0,
         "appleexercisetime": 0,
         "standhours": 0,
+        "flightsclimbed": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -1040,6 +1059,7 @@ def parse_export_all(
     basal_energy_by_day: dict = {}  # date -> {sourceName: kcal}
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
     stand_by_day: dict = {}  # date -> {sourceName: hours}
+    flights_by_day: dict = {}  # date -> {sourceName: flights}
     type_cache: dict[str, str] = {}
 
     progress_total: Optional[int] = None
@@ -1080,6 +1100,7 @@ def parse_export_all(
                     "distancewalkingrunning",
                     "appleexercisetime",
                     "applestandhour",
+                    "flightsclimbed",
                 )
                 or record_type.startswith(("restingheart", "sleepanalysis"))
             ):
@@ -1163,6 +1184,14 @@ def parse_export_all(
                                 source = attrib.get("sourceName") or "unknown"
                                 by_source = stand_by_day.setdefault(start.date(), {})
                                 by_source[source] = by_source.get(source, 0.0) + 1.0
+                    elif record_type == "flightsclimbed":
+                        if _day_in_range(start.date() if start else None):
+                            record_counts["flightsclimbed"] += 1
+                            value = parse_numeric(attrib.get("value"))
+                            if start and value:
+                                source = attrib.get("sourceName") or "unknown"
+                                by_source = flights_by_day.setdefault(start.date(), {})
+                                by_source[source] = by_source.get(source, 0.0) + float(value)
                     elif record_type.startswith("sleepanalysis"):
                         if _sleep_in_range(start, end):
                             record_counts["sleepanalysis"] += 1
@@ -1362,6 +1391,10 @@ def parse_export_all(
     metrics["stand_hours"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(stand_by_day.items())
+    ]
+    metrics["flights_climbed"] = [
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
+        for day, by_source in sorted(flights_by_day.items())
     ]
     for samples in metrics.values():
         samples.sort(key=lambda sample: sample.timestamp)
