@@ -413,6 +413,11 @@ def parse_health_metrics(
         "exercise_minutes": [],
         "stand_hours": [],
         "flights_climbed": [],
+        "vo2_max": [],
+        # Requires walking workouts plus heart-rate samples; only
+        # parse_export_all has both, so this stays empty here.
+        "walking_hr_bpm": [],
+        "resting_energy_kcal": [],
     }
     record_counts: dict[str, int] = {
         "bodymass": 0,
@@ -427,6 +432,7 @@ def parse_health_metrics(
         "appleexercisetime": 0,
         "standhours": 0,
         "flightsclimbed": 0,
+        "vo2max": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -625,6 +631,14 @@ def parse_health_metrics(
                 source = elem.attrib.get("sourceName") or "unknown"
                 by_source = flights_by_day.setdefault(start.date(), {})
                 by_source[source] = by_source.get(source, 0.0) + float(value)
+        elif record_type == "vo2max":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["vo2max"] += 1
+            value = parse_numeric(elem.attrib.get("value"))
+            if start and value is not None:
+                metrics["vo2_max"].append(MetricSample(start, value))
         elif record_type.startswith("sleepanalysis"):
             if not _sleep_in_range(start, end):
                 elem.clear()
@@ -670,6 +684,10 @@ def parse_health_metrics(
     metrics["flights_climbed"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(flights_by_day.items())
+    ]
+    metrics["resting_energy_kcal"] = [
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
+        for day, by_source in sorted(basal_energy_by_day.items())
     ]
     for samples in metrics.values():
         samples.sort(key=lambda sample: sample.timestamp)
@@ -963,6 +981,9 @@ def parse_export_all(
         "exercise_minutes": [],
         "stand_hours": [],
         "flights_climbed": [],
+        "vo2_max": [],
+        "walking_hr_bpm": [],
+        "resting_energy_kcal": [],
     }
     record_counts: dict[str, int] = {
         "bodymass": 0,
@@ -977,6 +998,7 @@ def parse_export_all(
         "appleexercisetime": 0,
         "standhours": 0,
         "flightsclimbed": 0,
+        "vo2max": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -1101,6 +1123,7 @@ def parse_export_all(
                     "appleexercisetime",
                     "applestandhour",
                     "flightsclimbed",
+                    "vo2max",
                 )
                 or record_type.startswith(("restingheart", "sleepanalysis"))
             ):
@@ -1192,6 +1215,12 @@ def parse_export_all(
                                 source = attrib.get("sourceName") or "unknown"
                                 by_source = flights_by_day.setdefault(start.date(), {})
                                 by_source[source] = by_source.get(source, 0.0) + float(value)
+                    elif record_type == "vo2max":
+                        if _day_in_range(start.date() if start else None):
+                            record_counts["vo2max"] += 1
+                            value = parse_numeric(attrib.get("value"))
+                            if start and value is not None:
+                                metrics["vo2_max"].append(MetricSample(start, value))
                     elif record_type.startswith("sleepanalysis"):
                         if _sleep_in_range(start, end):
                             record_counts["sleepanalysis"] += 1
@@ -1367,6 +1396,20 @@ def parse_export_all(
         if workout.active_energy_kcal is not None and workout.basal_energy_kcal is not None:
             workout.total_energy_kcal = workout.active_energy_kcal + workout.basal_energy_kcal
 
+    # Walking heart rate: average heart rate over all heart-rate samples from
+    # the day's walking-type workouts (any activity type containing "walk"),
+    # weighted by sample count so longer walks count for more.
+    walking_hr_by_day: dict = {}  # date -> [heart-rate sum, sample count]
+    for workout in workouts:
+        if "walk" not in workout.activity_type.lower() or not workout.heart_rate_samples:
+            continue
+        day = workout.start_date.date() if workout.start_date else None
+        if day is None:
+            continue
+        day_stats = walking_hr_by_day.setdefault(day, [0.0, 0])
+        day_stats[0] += sum(value for _, value in workout.heart_rate_samples)
+        day_stats[1] += len(workout.heart_rate_samples)
+
     # Each device (Watch, iPhone) writes its own samples for the same day, so
     # summing every source double counts. Keep the best single-source total per
     # day, matching what the Health app shows.
@@ -1395,6 +1438,15 @@ def parse_export_all(
     metrics["flights_climbed"] = [
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(flights_by_day.items())
+    ]
+    metrics["resting_energy_kcal"] = [
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
+        for day, by_source in sorted(basal_energy_by_day.items())
+    ]
+    metrics["walking_hr_bpm"] = [
+        MetricSample(datetime.combine(day, time.min), total / count)
+        for day, (total, count) in sorted(walking_hr_by_day.items())
+        if count
     ]
     for samples in metrics.values():
         samples.sort(key=lambda sample: sample.timestamp)

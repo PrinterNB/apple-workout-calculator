@@ -515,19 +515,21 @@ def build_body_measurement_records(metrics_frame: pd.DataFrame) -> list[tuple[st
     if metrics_frame is None or metrics_frame.empty:
         return []
     specs = [
-        ("weight_kg", "Lowest Weight", lambda v: f"{v * 2.2046226218:.1f} lb"),
-        ("body_fat_pct", "Lowest Body Fat", lambda v: f"{v:.1f}%"),
-        ("bmi", "Best (Lowest) BMI", lambda v: f"{v:.1f} BMI"),
-        ("resting_hr_bpm", "Lowest Resting Heart Rate", lambda v: f"{v:.0f} bpm"),
+        ("weight_kg", "Lowest Weight", lambda v: f"{v * 2.2046226218:.1f} lb", "min"),
+        ("body_fat_pct", "Lowest Body Fat", lambda v: f"{v:.1f}%", "min"),
+        ("bmi", "Best (Lowest) BMI", lambda v: f"{v:.1f} BMI", "min"),
+        ("resting_hr_bpm", "Lowest Resting Heart Rate", lambda v: f"{v:.0f} bpm", "min"),
+        ("walking_hr_bpm", "Lowest Walking Heart Rate", lambda v: f"{v:.0f} bpm", "min"),
+        ("vo2_max", "Best (Highest) VO2 Max", lambda v: f"{v:.1f} L/min", "max"),
     ]
     records = []
-    for column, label, formatter in specs:
+    for column, label, formatter, direction in specs:
         if column not in metrics_frame.columns:
             continue
         series = metrics_frame[column].dropna()
         if series.empty:
             continue
-        idx = series.idxmin()
+        idx = series.idxmin() if direction == "min" else series.idxmax()
         records.append((label, formatter(float(series[idx])), format_date_short(idx)))
     return records
 
@@ -592,9 +594,10 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
     frames: dict[str, pd.Series] = {}
     all_days: set = set()
     for column in (
-        "weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "sleep_hours", "steps",
-        "walk_run_distance_m", "move_energy_kcal", "total_energy_kcal",
-        "exercise_minutes", "stand_hours", "flights_climbed",
+        "weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "vo2_max", "sleep_hours",
+        "steps", "walk_run_distance_m", "move_energy_kcal", "total_energy_kcal",
+        "resting_energy_kcal", "exercise_minutes", "stand_hours", "flights_climbed",
+        "walking_hr_bpm",
     ):
         samples_list = samples.get(column) or []
         if not samples_list:
@@ -610,7 +613,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
 
     index = pd.to_datetime(sorted(all_days))
     frame = pd.DataFrame(index=index)
-    for column in ("weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm"):
+    for column in ("weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "vo2_max"):
         if column in frames:
             frame[column] = frames[column].reindex(index, method="ffill")
     if "sleep_hours" in frames:
@@ -623,12 +626,16 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
         frame["move_energy_kcal"] = frames["move_energy_kcal"].reindex(index)
     if "total_energy_kcal" in frames:
         frame["total_energy_kcal"] = frames["total_energy_kcal"].reindex(index)
+    if "resting_energy_kcal" in frames:
+        frame["resting_energy_kcal"] = frames["resting_energy_kcal"].reindex(index)
     if "exercise_minutes" in frames:
         frame["exercise_minutes"] = frames["exercise_minutes"].reindex(index)
     if "stand_hours" in frames:
         frame["stand_hours"] = frames["stand_hours"].reindex(index)
     if "flights_climbed" in frames:
         frame["flights_climbed"] = frames["flights_climbed"].reindex(index)
+    if "walking_hr_bpm" in frames:
+        frame["walking_hr_bpm"] = frames["walking_hr_bpm"].reindex(index)
 
     if "weight_kg" in frame and "height_m" in frame:
         height = frame["height_m"]
@@ -641,9 +648,9 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
 # Day-based metrics that the "Current Measurements" tiles can show as either a
 # 7-day average or an average over the whole selected time period.
 DAILY_AVG_COLUMNS = (
-    "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm",
-    "move_energy_kcal", "total_energy_kcal", "exercise_minutes", "stand_hours",
-    "flights_climbed",
+    "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm", "vo2_max",
+    "move_energy_kcal", "total_energy_kcal", "resting_energy_kcal",
+    "exercise_minutes", "stand_hours", "flights_climbed", "walking_hr_bpm",
 )
 
 
@@ -834,6 +841,14 @@ METRIC_LAYERS = [
         "y_title": "Total Calories Burned (kcal)",
     },
     {
+        "column": "resting_energy_kcal",
+        "title": "Resting Calories (kcal)",
+        "color": "#999999",
+        "format": lambda value: f"{value:,.0f} kcal" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Resting Calories (kcal)",
+    },
+    {
         "column": "exercise_minutes",
         "title": "Exercise (min)",
         "color": "#64D22D",
@@ -856,6 +871,22 @@ METRIC_LAYERS = [
         "format": lambda value: f"{value:,.0f}" if value is not None and pd.notna(value) else "N/A",
         "convert": None,
         "y_title": "Flights Climbed (day)",
+    },
+    {
+        "column": "vo2_max",
+        "title": "VO2 Max (L/min)",
+        "color": "#009688",
+        "format": lambda value: f"{value:.1f} L/min" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "VO2 Max (L/min)",
+    },
+    {
+        "column": "walking_hr_bpm",
+        "title": "Walking Heart Rate (bpm)",
+        "color": "#FF2D55",
+        "format": lambda value: f"{value:.0f} bpm" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Walking Heart Rate (bpm)",
     },
 ]
 
@@ -1660,8 +1691,8 @@ with tab3:
         if not found_counts:
             st.info(
                 "No body measurement records (bodymass, bodyfatpercentage, height, "
-                "restingheart-rate, sleepanalysis, stepcount, walking/running "
-                "distance, active energy, exercise, stand hours, or flights "
+                "restingheart-rate, vo2max, sleepanalysis, stepcount, walking/running "
+                "distance, active/resting energy, exercise, stand hours, or flights "
                 "climbed) were found in export.xml."
             )
         else:
@@ -1692,6 +1723,8 @@ with tab3:
         "exercise_minutes": "Exercise (min)",
         "stand_hours": "Stand (h)",
         "flights_climbed": "Flights Climbed",
+        "walking_hr_bpm": "Walking Heart Rate (bpm)",
+        "resting_energy_kcal": "Resting Calories (kcal)",
     }
     if view_day:
         # Calendar picker, same widget as the custom range in the sidebar, bounded
@@ -1912,7 +1945,7 @@ with tab4:
         ("Streaks (consecutive days)", build_streak_records(filtered_df, records_metrics_frame)),
         ("Most in a Day (workouts)", build_daily_workout_records(filtered_df)),
         ("Most in a Day (health)", build_daily_health_records(records_metrics_frame)),
-        ("Best Body Measurements (lowest)", build_body_measurement_records(records_metrics_frame)),
+        ("Best Body Measurements", build_body_measurement_records(records_metrics_frame)),
     ]
 
     shown_any = False
