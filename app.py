@@ -18,6 +18,7 @@ from health_parser import (
     MetricSample,
     RouteRecord,
     WorkoutRecord,
+    _naive_local,
     match_route_to_workout,
     parse_export_all,
     parse_route_directory,
@@ -28,7 +29,7 @@ from health_parser import (
 )
 
 
-DATA_PARSER_VERSION = 23
+DATA_PARSER_VERSION = 24
 
 st.set_page_config(page_title="Apple Workout Calculator", layout="wide")
 
@@ -534,6 +535,28 @@ def build_body_measurement_records(metrics_frame: pd.DataFrame) -> list[tuple[st
     return records
 
 
+def build_running_records(metrics_frame: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Best daily-average running stats: (label, value, date) triples."""
+    if metrics_frame is None or metrics_frame.empty:
+        return []
+    specs = [
+        ("running_power_w", "Highest Running Power", lambda v: f"{v:,.0f} W"),
+        ("running_speed_mps", "Fastest Running Speed", lambda v: f"{v * 2.2369362921:.1f} mph"),
+        ("running_stride_m", "Longest Running Stride", lambda v: f"{v * 3.280839895:.2f} ft"),
+        ("running_cadence_spm", "Highest Running Cadence", lambda v: f"{v:,.0f} steps/min"),
+    ]
+    records = []
+    for column, label, formatter in specs:
+        if column not in metrics_frame.columns:
+            continue
+        series = metrics_frame[column].dropna()
+        if series.empty:
+            continue
+        idx = series.idxmax()
+        records.append((label, formatter(float(series[idx])), format_date_short(idx)))
+    return records
+
+
 def build_streak_records(df: pd.DataFrame, metrics_frame: pd.DataFrame) -> list[tuple[str, str, str]]:
     """Consecutive-day streak records: (label, value, date) triples."""
     records = []
@@ -598,6 +621,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
         "steps", "walk_run_distance_m", "move_energy_kcal", "total_energy_kcal",
         "resting_energy_kcal", "exercise_minutes", "stand_hours", "flights_climbed",
         "walking_hr_bpm",
+        "running_power_w", "running_speed_mps", "running_stride_m", "running_cadence_spm",
     ):
         samples_list = samples.get(column) or []
         if not samples_list:
@@ -636,6 +660,9 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
         frame["flights_climbed"] = frames["flights_climbed"].reindex(index)
     if "walking_hr_bpm" in frames:
         frame["walking_hr_bpm"] = frames["walking_hr_bpm"].reindex(index)
+    for column in ("running_power_w", "running_speed_mps", "running_stride_m", "running_cadence_spm"):
+        if column in frames:
+            frame[column] = frames[column].reindex(index)
 
     if "weight_kg" in frame and "height_m" in frame:
         height = frame["height_m"]
@@ -651,6 +678,7 @@ DAILY_AVG_COLUMNS = (
     "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm", "vo2_max",
     "move_energy_kcal", "total_energy_kcal", "resting_energy_kcal",
     "exercise_minutes", "stand_hours", "flights_climbed", "walking_hr_bpm",
+    "running_power_w", "running_speed_mps", "running_stride_m", "running_cadence_spm",
 )
 
 
@@ -888,6 +916,38 @@ METRIC_LAYERS = [
         "convert": None,
         "y_title": "Walking Heart Rate (bpm)",
     },
+    {
+        "column": "running_power_w",
+        "title": "Running Power (W)",
+        "color": "#00C7BE",
+        "format": lambda value: f"{value:,.0f} W" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Running Power (W)",
+    },
+    {
+        "column": "running_speed_mps",
+        "title": "Running Speed (mph)",
+        "color": "#AF52DE",
+        "format": lambda value: f"{value * 2.2369362921:.1f} mph" if value is not None and pd.notna(value) else "N/A",
+        "convert": lambda value: value * 2.2369362921,
+        "y_title": "Running Speed (mph)",
+    },
+    {
+        "column": "running_stride_m",
+        "title": "Running Stride Length (ft)",
+        "color": "#5856D6",
+        "format": lambda value: f"{value * 3.280839895:.2f} ft" if value is not None and pd.notna(value) else "N/A",
+        "convert": lambda value: value * 3.280839895,
+        "y_title": "Running Stride Length (ft)",
+    },
+    {
+        "column": "running_cadence_spm",
+        "title": "Running Cadence (spm)",
+        "color": "#00E5FF",
+        "format": lambda value: f"{value:,.0f}" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Running Cadence (steps/min)",
+    },
 ]
 
 
@@ -1122,6 +1182,105 @@ def render_elevation_profile(route: RouteRecord | None, workout: WorkoutRecord) 
             showgrid=False,
         ),
         legend=dict(orientation="h"),
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
+def render_running_profile(workout: WorkoutRecord, running_metrics: dict) -> None:
+    """Per-workout running power / speed / cadence over time, when the export has them.
+
+    The raw samples were collected during the single export pass and stored in the
+    shared metrics dict; they are filtered here to the workout's start/end window so
+    no extra parse is required. Non-running workouts simply have no samples in their
+    window and fall back to a short note.
+    """
+    # Metric sample timestamps are stored naive-local (see _naive_local in
+    # health_parser), so bring the aware workout window into that same frame.
+    window_start = _naive_local(workout.start_date)
+    window_end = _naive_local(workout.end_date)
+    if window_start is None and window_end is None:
+        st.caption("No running power, speed, or cadence samples are associated with this workout.")
+        return
+    if window_start is None:
+        window_start = window_end
+    elif window_end is None:
+        window_end = window_start
+    if window_start > window_end:
+        window_start, window_end = window_end, window_start
+
+    def in_window(samples):
+        pairs = []
+        for sample in samples or []:
+            timestamp = _naive_local(sample.timestamp)
+            if timestamp is not None and window_start <= timestamp <= window_end:
+                pairs.append((timestamp, sample.value))
+        pairs.sort(key=lambda item: item[0])
+        return pairs
+
+    # (title, filtered pairs, mph factor for m/s samples or None, unit tag)
+    series = [
+        ("Power (W)", in_window(running_metrics.get("running_power_samples")), None, "watts"),
+        (
+            "Running Speed (mph)",
+            in_window(running_metrics.get("running_speed_samples")),
+            2.2369362921,
+            "mph",
+        ),
+        (
+            "Running Cadence (steps/min)",
+            in_window(running_metrics.get("running_cadence_samples")),
+            None,
+            "spm",
+        ),
+    ]
+    present = [entry for entry in series if entry[1]]
+    if not present:
+        st.caption("No running power, speed, or cadence samples are associated with this workout.")
+        return
+
+    st.markdown("### Running Power / Speed / Cadence Over Time")
+
+    # At-a-glance averages for whatever this workout actually recorded.
+    tiles = []
+    for _title, pairs, _factor, unit in present:
+        average = sum(value for _, value in pairs) / len(pairs)
+        if unit == "mph":
+            tiles.append(("Avg Speed (mph)", f"{average * 2.2369362921:.1f}"))
+        elif unit == "watts":
+            tiles.append(("Avg Power (W)", f"{average:,.0f}"))
+        else:
+            tiles.append(("Avg Cadence (steps/min)", f"{average:,.0f}"))
+    columns = st.columns(len(tiles))
+    for index, (label, text) in enumerate(tiles):
+        columns[index].metric(label, text)
+
+    fig = make_subplots(
+        rows=len(present),
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.14,
+        row_titles=[entry[0] for entry in present],
+    )
+    for row_index, (_title, pairs, factor, _unit) in enumerate(present, start=1):
+        times = [timestamp for timestamp, _ in pairs]
+        values = [value * factor for _, value in pairs] if factor else [value for _, value in pairs]
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=values,
+                mode="lines+markers",
+                name=_title,
+                line=dict(width=2),
+                marker=dict(size=5),
+            ),
+            row=row_index,
+            col=1,
+        )
+    fig.update_layout(
+        height=180 * len(present) + 60,
+        margin=dict(l=10, r=10, t=50, b=10),
+        template="plotly_white",
+        showlegend=False,
     )
     st.plotly_chart(fig, width="stretch")
 
@@ -1682,6 +1841,10 @@ with tab2:
         st.markdown("### Elevation / Speed / Heart Rate Over Time")
         render_elevation_profile(selected_route, selected_workout)
 
+        render_running_profile(
+            selected_workout, st.session_state.get("health_metrics", ({}, {}))[0]
+        )
+
 with tab3:
     metrics_samples, metrics_counts = st.session_state.get("health_metrics", ({}, {}))
     metrics_frame = build_metrics_frame(metrics_samples)
@@ -1725,6 +1888,10 @@ with tab3:
         "flights_climbed": "Flights Climbed",
         "walking_hr_bpm": "Walking Heart Rate (bpm)",
         "resting_energy_kcal": "Resting Calories (kcal)",
+        "running_power_w": "Running Power (W)",
+        "running_speed_mps": "Running Speed (mph)",
+        "running_stride_m": "Running Stride Length (ft)",
+        "running_cadence_spm": "Running Cadence (steps/min)",
     }
     if view_day:
         # Calendar picker, same widget as the custom range in the sidebar, bounded
@@ -1945,6 +2112,7 @@ with tab4:
         ("Streaks (consecutive days)", build_streak_records(filtered_df, records_metrics_frame)),
         ("Most in a Day (workouts)", build_daily_workout_records(filtered_df)),
         ("Most in a Day (health)", build_daily_health_records(records_metrics_frame)),
+        ("Running Records", build_running_records(records_metrics_frame)),
         ("Best Body Measurements", build_body_measurement_records(records_metrics_frame)),
     ]
 

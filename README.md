@@ -22,7 +22,7 @@ A Streamlit app for exploring workouts and body measurements from an Apple Healt
 - Displays elevation and calculated speed in mph over timestamped route points.
 - Displays heart rate over time when Apple Health heart-rate samples are available.
 - Displays heart rate even when a workout has no matched GPS route.
-- Tracks body measurements (weight, body fat percentage, height, resting heart rate, sleep duration, daily steps) plus daily move calories, total calories burned, exercise time, and stand hours, and derived BMI and lean body mass, on a dedicated Health Metrics tab, with toggleable per-metric chart layers that follow the sidebar time frame. Also charts daily walking + running distance in miles from the export's `DistanceWalkingRunning` records for the selected range. Each device (Watch, iPhone) writes its own samples for the same walking, so the per-day value is the single most complete source total rather than the sum of every record — which is why it matches the Health app's own walking/running numbers.
+- Tracks body measurements (weight, body fat percentage, height, resting heart rate, sleep duration, daily steps) plus daily move calories, total calories burned, exercise time, and stand hours, and running power, speed, stride length, and cadence, and derived BMI and lean body mass, on a dedicated Health Metrics tab, with toggleable per-metric chart layers that follow the sidebar time frame. Also charts daily walking + running distance in miles from the export's `DistanceWalkingRunning` records for the selected range. Each device (Watch, iPhone) writes its own samples for the same walking, so the per-day value is the single most complete source total rather than the sum of every record — which is why it matches the Health app's own walking/running numbers.
 
 ## Requirements
 
@@ -90,6 +90,8 @@ Choose a workout from the filtered set to view its local start/end time in AM/PM
 
 If no GPS route is matched, the profile section can still display heart rate by itself.
 
+Workouts whose export includes `runningpower`, `runningspeed`, or stride samples get a further **Running Power / Speed / Cadence Over Time** section below the profile: average tiles for whatever the workout actually recorded, plus one time-series subplot per available metric (power in W, speed in mph, cadence in steps/min), each scoped to that workout's start/end window. Workouts without those samples show a short note instead.
+
 ### Health Metrics
 
 Shows the latest available value for each tracked metric as rows of stat tiles (day-based metrics — steps, walking + running distance, sleep, resting heart rate, move calories, exercise, and stand — show the average of the last seven complete days rather than today's still-in-progress number; a toggle switches them to the average over the whole selected time period, with the tile labels relabeled `(… 7-day avg)` to `(… range avg)` to match. Both averages are precomputed once when **Process data** runs, so flipping the toggle is instant and never re-parses the export), then totals for the selected time range (walk + run distance in miles, steps, sleep hours, move calories, exercise minutes, stand hours), then a time-series chart below it. Body measurement records are parsed once during the initial export load, alongside workouts and routes, so opening or re-rendering the tab never triggers another pass over `export.xml`. Each metric is its own toggleable layer (a multiselect of check/uncheck options), and the chart respects the sidebar time frame. A **Trend lines** checkbox draws a smoothed trend (centered 15-day rolling average) as the main line for every displayed layer, with the raw measurements faded in the background so the overall direction stays visible through noisy data (sleep, resting heart rate). Metrics:
@@ -108,8 +110,12 @@ Shows the latest available value for each tracked metric as rows of stat tiles (
 - **Total Calories Burned (kcal)** — `activeenergyburned` (move) + `basalenergyburned` (resting) per calendar day; each device's two streams add together, then the best single device's combined total wins the day
 - **Stand (h)** — the blue ring: one `applestandhour` record per stood hour, so the daily total is the count of such records; likewise the largest single-source total.
 - **Flights Climbed (day)** — `flightsclimbed` records summed per calendar day; likewise the largest single-source total.
+- **Running Power (W)** — `runningpower` samples (watts), averaged per calendar day
+- **Running Speed (mph)** — `runningspeed` samples normalized to m/s, averaged per day; charted in mph
+- **Running Stride Length (ft)** — `runningstridelength` samples normalized to meters, averaged per day; charted in feet
+- **Running Cadence (steps/min)** — derived, since Apple exports no cadence stream: each stride-length sample is paired with the closest speed sample (within 5 seconds) and converted to steps/minute
 
-Weight, body fat, height, and resting heart rate are carried forward to later days so the lines stay continuous between measurements; sleep, steps, walking + running distance, move calories, exercise, stand, and flights climbed are only plotted on days with data. New measurements can be added later by collecting them in `parse_health_metrics` in `health_parser.py` and registering a layer in `METRIC_LAYERS` in `app.py`.
+Weight, body fat, height, and resting heart rate are carried forward to later days so the lines stay continuous between measurements; sleep, steps, walking + running distance, move calories, exercise, stand, flights climbed, and the running stats are only plotted on days with data. New measurements can be added later by collecting them in `parse_health_metrics` in `health_parser.py` and registering a layer in `METRIC_LAYERS` in `app.py`.
 
 ### Records
 
@@ -119,6 +125,7 @@ A trophy shelf of daily and all-time records, computed from the current date ran
 - **Streaks (consecutive days)** — longest run of consecutive days with a workout, with 30+ minutes of exercise, and with 12+ stand hours
 - **Most in a Day (workouts)** — most workouts, hours, distance, and calories in a single day
 - **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep, most stand hours, and most flights climbed
+- **Running Records** — highest daily-average running power, speed, stride length, and cadence
 - **Best Body Measurements (lowest)** — lowest weight, lowest body fat, best (lowest) BMI, and lowest resting heart rate
 
 Records follow the same filtering as the other tabs, so narrowing the sidebar (date range or activity types) re-scopes them. New records can be added in the `build_*_records` functions in `app.py`.

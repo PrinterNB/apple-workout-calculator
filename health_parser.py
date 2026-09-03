@@ -322,6 +322,72 @@ def normalize_height_m(height: Optional[float], unit: Optional[str]) -> Optional
     return float(height) * conversion.get(unit_name, 0.01)
 
 
+def normalize_speed_mps(speed: Optional[float], unit: Optional[str]) -> Optional[float]:
+    if speed is None:
+        return None
+    unit_name = (unit or "m/s").strip().lower()
+    if unit_name in {"km/h", "km/hr", "km/hour", "kph"}:
+        return float(speed) / 3.6
+    if unit_name in {"mi/h", "mi/hr", "mi/hour", "mph"}:
+        return float(speed) * 0.44704
+    # m/s (the export default) passes through unchanged.
+    return float(speed)
+
+
+def daily_mean_samples(samples: list[MetricSample]) -> list[MetricSample]:
+    """One sample per calendar day: the mean of that day's raw samples."""
+    per_day: dict = {}
+    for sample in samples:
+        bucket = per_day.setdefault(sample.timestamp.date(), [0.0, 0])
+        bucket[0] += sample.value
+        bucket[1] += 1
+    return [
+        MetricSample(datetime.combine(day, time.min), total / count)
+        for day, (total, count) in sorted(per_day.items())
+    ]
+
+
+def derive_running_cadence(
+    speed_samples: list[MetricSample],
+    stride_samples: list[MetricSample],
+    tolerance_seconds: float = 5.0,
+) -> list[MetricSample]:
+    """Cadence (steps/min) from speed ÷ stride length, per stride sample.
+
+    Apple exports running speed and stride length as separate sample streams
+    (and no cadence stream at all), so pair each stride sample with the closest
+    speed sample within ``tolerance_seconds``. Empirically Apple's
+    ``RunningStrideLength`` is per foot-strike, so speed ÷ stride length is
+    already strikes per second and the ×60 gives steps/minute (a typical
+    runner lands ~130–170; doubling it reads ~280, which no human sustains).
+    """
+    if not speed_samples or not stride_samples:
+        return []
+    ordered_speed = sorted(speed_samples, key=lambda sample: sample.timestamp)
+    speed_times = [sample.timestamp.timestamp() for sample in ordered_speed]
+    cadence: list[MetricSample] = []
+    for stride in stride_samples:
+        stride_length = stride.value
+        if stride_length <= 0:
+            continue
+        stamp = stride.timestamp.timestamp()
+        index = bisect_left(speed_times, stamp)
+        best: Optional[tuple[float, int]] = None
+        for candidate in (index - 1, index):
+            if 0 <= candidate < len(ordered_speed):
+                delta = abs(speed_times[candidate] - stamp)
+                if delta <= tolerance_seconds and (best is None or delta < best[0]):
+                    best = (delta, candidate)
+        if best is None:
+            continue
+        speed = ordered_speed[best[1]].value
+        if speed <= 0:
+            continue
+        cadence.append(MetricSample(stride.timestamp, speed / stride_length * 60.0))
+    cadence.sort(key=lambda sample: sample.timestamp)
+    return cadence
+
+
 def _naive_local(value: Optional[datetime]) -> Optional[datetime]:
     if value is None:
         return None
@@ -418,6 +484,15 @@ def parse_health_metrics(
         # parse_export_all has both, so this stays empty here.
         "walking_hr_bpm": [],
         "resting_energy_kcal": [],
+        # Running workout stats: raw per-sample streams plus per-day means.
+        "running_power_w": [],
+        "running_speed_mps": [],
+        "running_stride_m": [],
+        "running_cadence_spm": [],
+        "running_power_samples": [],
+        "running_speed_samples": [],
+        "running_stride_samples": [],
+        "running_cadence_samples": [],
     }
     record_counts: dict[str, int] = {
         "bodymass": 0,
@@ -433,6 +508,9 @@ def parse_health_metrics(
         "standhours": 0,
         "flightsclimbed": 0,
         "vo2max": 0,
+        "runningpower": 0,
+        "runningspeed": 0,
+        "runningstridelength": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -490,6 +568,9 @@ def parse_health_metrics(
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
     stand_by_day: dict = {}  # date -> {sourceName: hours}
     flights_by_day: dict = {}  # date -> {sourceName: flights}
+    running_power_samples: list[MetricSample] = []
+    running_speed_samples: list[MetricSample] = []
+    running_stride_samples: list[MetricSample] = []
 
     progress_total: Optional[int] = None
     progress_stride = 1
@@ -639,6 +720,30 @@ def parse_health_metrics(
             value = parse_numeric(elem.attrib.get("value"))
             if start and value is not None:
                 metrics["vo2_max"].append(MetricSample(start, value))
+        elif record_type == "runningpower":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["runningpower"] += 1
+            value = parse_numeric(elem.attrib.get("value"))
+            if start and value is not None and value > 0:
+                running_power_samples.append(MetricSample(start, float(value)))
+        elif record_type == "runningspeed":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["runningspeed"] += 1
+            speed = normalize_speed_mps(parse_numeric(elem.attrib.get("value")), elem.attrib.get("unit"))
+            if start and speed is not None:
+                running_speed_samples.append(MetricSample(start, speed))
+        elif record_type == "runningstridelength":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["runningstridelength"] += 1
+            meters = normalize_distance_meters(parse_numeric(elem.attrib.get("value")), elem.attrib.get("unit"))
+            if start and meters:
+                running_stride_samples.append(MetricSample(start, meters))
         elif record_type.startswith("sleepanalysis"):
             if not _sleep_in_range(start, end):
                 elem.clear()
@@ -689,6 +794,19 @@ def parse_health_metrics(
         MetricSample(datetime.combine(day, time.min), max(by_source.values()))
         for day, by_source in sorted(basal_energy_by_day.items())
     ]
+    for samples_list, key in (
+        (running_power_samples, "running_power_samples"),
+        (running_speed_samples, "running_speed_samples"),
+        (running_stride_samples, "running_stride_samples"),
+    ):
+        samples_list.sort(key=lambda sample: sample.timestamp)
+        metrics[key] = samples_list
+    running_cadence_samples = derive_running_cadence(running_speed_samples, running_stride_samples)
+    metrics["running_cadence_samples"] = running_cadence_samples
+    metrics["running_power_w"] = daily_mean_samples(running_power_samples)
+    metrics["running_speed_mps"] = daily_mean_samples(running_speed_samples)
+    metrics["running_stride_m"] = daily_mean_samples(running_stride_samples)
+    metrics["running_cadence_spm"] = daily_mean_samples(running_cadence_samples)
     for samples in metrics.values():
         samples.sort(key=lambda sample: sample.timestamp)
     return metrics, record_counts
@@ -984,6 +1102,15 @@ def parse_export_all(
         "vo2_max": [],
         "walking_hr_bpm": [],
         "resting_energy_kcal": [],
+        # Running workout stats: raw per-sample streams plus per-day means.
+        "running_power_w": [],
+        "running_speed_mps": [],
+        "running_stride_m": [],
+        "running_cadence_spm": [],
+        "running_power_samples": [],
+        "running_speed_samples": [],
+        "running_stride_samples": [],
+        "running_cadence_samples": [],
     }
     record_counts: dict[str, int] = {
         "bodymass": 0,
@@ -999,6 +1126,9 @@ def parse_export_all(
         "standhours": 0,
         "flightsclimbed": 0,
         "vo2max": 0,
+        "runningpower": 0,
+        "runningspeed": 0,
+        "runningstridelength": 0,
     }
     export_path = Path(export_path)
     if not export_path.exists():
@@ -1082,6 +1212,9 @@ def parse_export_all(
     exercise_by_day: dict = {}  # date -> {sourceName: minutes}
     stand_by_day: dict = {}  # date -> {sourceName: hours}
     flights_by_day: dict = {}  # date -> {sourceName: flights}
+    running_power_samples: list[MetricSample] = []
+    running_speed_samples: list[MetricSample] = []
+    running_stride_samples: list[MetricSample] = []
     type_cache: dict[str, str] = {}
 
     progress_total: Optional[int] = None
@@ -1124,6 +1257,9 @@ def parse_export_all(
                     "applestandhour",
                     "flightsclimbed",
                     "vo2max",
+                    "runningpower",
+                    "runningspeed",
+                    "runningstridelength",
                 )
                 or record_type.startswith(("restingheart", "sleepanalysis"))
             ):
@@ -1221,6 +1357,28 @@ def parse_export_all(
                             value = parse_numeric(attrib.get("value"))
                             if start and value is not None:
                                 metrics["vo2_max"].append(MetricSample(start, value))
+                    elif record_type == "runningpower":
+                        if _day_in_range(start.date() if start else None):
+                            record_counts["runningpower"] += 1
+                            value = parse_numeric(attrib.get("value"))
+                            if start and value is not None and value > 0:
+                                running_power_samples.append(MetricSample(start, float(value)))
+                    elif record_type == "runningspeed":
+                        if _day_in_range(start.date() if start else None):
+                            record_counts["runningspeed"] += 1
+                            speed = normalize_speed_mps(
+                                parse_numeric(attrib.get("value")), attrib.get("unit")
+                            )
+                            if start and speed is not None:
+                                running_speed_samples.append(MetricSample(start, speed))
+                    elif record_type == "runningstridelength":
+                        if _day_in_range(start.date() if start else None):
+                            record_counts["runningstridelength"] += 1
+                            meters = normalize_distance_meters(
+                                parse_numeric(attrib.get("value")), attrib.get("unit")
+                            )
+                            if start and meters:
+                                running_stride_samples.append(MetricSample(start, meters))
                     elif record_type.startswith("sleepanalysis"):
                         if _sleep_in_range(start, end):
                             record_counts["sleepanalysis"] += 1
@@ -1448,6 +1606,19 @@ def parse_export_all(
         for day, (total, count) in sorted(walking_hr_by_day.items())
         if count
     ]
+    for samples_list, key in (
+        (running_power_samples, "running_power_samples"),
+        (running_speed_samples, "running_speed_samples"),
+        (running_stride_samples, "running_stride_samples"),
+    ):
+        samples_list.sort(key=lambda sample: sample.timestamp)
+        metrics[key] = samples_list
+    running_cadence_samples = derive_running_cadence(running_speed_samples, running_stride_samples)
+    metrics["running_cadence_samples"] = running_cadence_samples
+    metrics["running_power_w"] = daily_mean_samples(running_power_samples)
+    metrics["running_speed_mps"] = daily_mean_samples(running_speed_samples)
+    metrics["running_stride_m"] = daily_mean_samples(running_stride_samples)
+    metrics["running_cadence_spm"] = daily_mean_samples(running_cadence_samples)
     for samples in metrics.values():
         samples.sort(key=lambda sample: sample.timestamp)
 
