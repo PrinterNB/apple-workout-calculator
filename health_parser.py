@@ -97,6 +97,18 @@ class MetricSample:
 
 
 @dataclass
+class SleepStageSample:
+    start: datetime
+    end: datetime
+    stage: str
+    source_name: str = ""
+
+    @property
+    def timestamp(self) -> datetime:
+        return self.start
+
+
+@dataclass
 class RoutePoint:
     latitude: float
     longitude: float
@@ -466,12 +478,14 @@ def parse_health_metrics(
     (sleep hours and steps are summed per calendar day), plus a count of how
     many of each recognized body-record type the file actually contains.
     """
-    metrics: dict[str, list[MetricSample]] = {
+    metrics: dict[str, list[Any]] = {
         "weight_kg": [],
         "body_fat_pct": [],
         "height_m": [],
         "resting_hr_bpm": [],
         "sleep_hours": [],
+        "sleep_stage_samples": [],
+        "time_in_daylight_minutes": [],
         "steps": [],
         "walk_run_distance_m": [],
         "move_energy_kcal": [],
@@ -500,6 +514,7 @@ def parse_health_metrics(
         "height": 0,
         "restingheart": 0,
         "sleepanalysis": 0,
+        "timeindaylight": 0,
         "stepcount": 0,
         "distancewalkingrunning": 0,
         "activeenergyburned": 0,
@@ -560,6 +575,7 @@ def parse_health_metrics(
         xml_events = ET.iterparse(export_path, events=("end",))
 
     sleep_hours_by_day: dict = {}
+    daylight_by_day: dict = {}
     steps_by_day: dict = {}  # date -> {sourceName: steps}
     steps_watch_sources: set = set()
     walk_run_distance_by_day: dict = {}  # date -> {sourceName: meters}
@@ -750,6 +766,15 @@ def parse_health_metrics(
                 continue
             record_counts["sleepanalysis"] += 1
             sleep_value = (elem.attrib.get("sleepValue") or "").lower()
+            if start and end and end >= start:
+                metrics["sleep_stage_samples"].append(
+                    SleepStageSample(
+                        start=start,
+                        end=end,
+                        stage=elem.attrib.get("sleepValue") or "Asleep",
+                        source_name=elem.attrib.get("sourceName") or "",
+                    )
+                )
             counts = "asleep" in sleep_value or not sleep_value
             duration = 0.0
             if counts and start and end and end >= start:
@@ -759,11 +784,26 @@ def parse_health_metrics(
             if duration > 0 and start is not None:
                 end_dt = end if (end is not None and end > start) else start
                 _distribute_across_days(sleep_hours_by_day, start, end_dt, duration / 3600.0)
+        elif record_type == "timeindaylight":
+            if not _day_in_range(start.date() if start else None):
+                elem.clear()
+                continue
+            record_counts["timeindaylight"] += 1
+            value = parse_numeric(elem.attrib.get("value"))
+            if start and value is not None:
+                minutes = normalize_duration(value, elem.attrib.get("unit")) / 60.0
+                source = elem.attrib.get("sourceName") or "unknown"
+                by_source = daylight_by_day.setdefault(start.date(), {})
+                by_source[source] = by_source.get(source, 0.0) + minutes
         elem.clear()
 
     metrics["sleep_hours"] = [
         MetricSample(datetime.combine(day, time.min), hours)
         for day, hours in sorted(sleep_hours_by_day.items())
+    ]
+    metrics["time_in_daylight_minutes"] = [
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
+        for day, by_source in sorted(daylight_by_day.items())
     ]
     metrics["steps"] = resolve_daily_steps(steps_by_day, steps_watch_sources)
     # Each device (Watch, iPhone) writes its own samples for the same day, so
@@ -1086,12 +1126,14 @@ def parse_export_all(
     active_energy_samples: list[tuple[datetime, float]] = []
     basal_energy_samples: list[tuple[datetime, float]] = []
 
-    metrics: dict[str, list[MetricSample]] = {
+    metrics: dict[str, list[Any]] = {
         "weight_kg": [],
         "body_fat_pct": [],
         "height_m": [],
         "resting_hr_bpm": [],
         "sleep_hours": [],
+        "sleep_stage_samples": [],
+        "time_in_daylight_minutes": [],
         "steps": [],
         "walk_run_distance_m": [],
         "move_energy_kcal": [],
@@ -1118,6 +1160,7 @@ def parse_export_all(
         "height": 0,
         "restingheart": 0,
         "sleepanalysis": 0,
+        "timeindaylight": 0,
         "stepcount": 0,
         "distancewalkingrunning": 0,
         "activeenergyburned": 0,
@@ -1204,6 +1247,7 @@ def parse_export_all(
         xml_events = ET.iterparse(export_path, events=("end",))
 
     sleep_hours_by_day: dict = {}
+    daylight_by_day: dict = {}
     steps_by_day: dict = {}  # date -> {sourceName: steps}
     steps_watch_sources: set = set()
     walk_run_distance_by_day: dict = {}  # date -> {sourceName: meters}
@@ -1251,6 +1295,7 @@ def parse_export_all(
                     "bodymass",
                     "bodyfatpercentage",
                     "height",
+                    "timeindaylight",
                     "stepcount",
                     "distancewalkingrunning",
                     "appleexercisetime",
@@ -1383,6 +1428,15 @@ def parse_export_all(
                         if _sleep_in_range(start, end):
                             record_counts["sleepanalysis"] += 1
                             sleep_value = (attrib.get("sleepValue") or "").lower()
+                            if start and end and end >= start:
+                                metrics["sleep_stage_samples"].append(
+                                    SleepStageSample(
+                                        start=start,
+                                        end=end,
+                                        stage=attrib.get("sleepValue") or "Asleep",
+                                        source_name=attrib.get("sourceName") or "",
+                                    )
+                                )
                             counts = "asleep" in sleep_value or not sleep_value
                             duration = 0.0
                             if counts and start and end and end >= start:
@@ -1392,6 +1446,15 @@ def parse_export_all(
                             if duration > 0 and start is not None:
                                 end_dt = end if (end is not None and end > start) else start
                                 _distribute_across_days(sleep_hours_by_day, start, end_dt, duration / 3600.0)
+                    elif record_type == "timeindaylight":
+                        if _day_in_range(start.date() if start else None):
+                            record_counts["timeindaylight"] += 1
+                            value = parse_numeric(attrib.get("value"))
+                            if start and value is not None:
+                                minutes = normalize_duration(value, attrib.get("unit")) / 60.0
+                                source = attrib.get("sourceName") or "unknown"
+                                by_source = daylight_by_day.setdefault(start.date(), {})
+                                by_source[source] = by_source.get(source, 0.0) + minutes
                 elem.clear()
                 continue
 
@@ -1574,6 +1637,10 @@ def parse_export_all(
     metrics["sleep_hours"] = [
         MetricSample(datetime.combine(day, time.min), hours)
         for day, hours in sorted(sleep_hours_by_day.items())
+    ]
+    metrics["time_in_daylight_minutes"] = [
+        MetricSample(datetime.combine(day, time.min), max(by_source.values()))
+        for day, by_source in sorted(daylight_by_day.items())
     ]
     metrics["steps"] = resolve_daily_steps(steps_by_day, steps_watch_sources)
     metrics["walk_run_distance_m"] = [

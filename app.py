@@ -496,6 +496,7 @@ def build_daily_health_records(metrics_frame: pd.DataFrame) -> list[tuple[str, s
         ("move_energy_kcal", "Most Move Calories in a Day", lambda v: f"{v:,.0f} kcal"),
         ("total_energy_kcal", "Most Calories Burned in a Day", lambda v: f"{v:,.0f} kcal"),
         ("sleep_hours", "Most Sleep in a Day", lambda v: f"{v:.1f} h"),
+        ("time_in_daylight_minutes", "Most Time in Daylight", lambda v: f"{v:,.0f} min"),
         ("stand_hours", "Most Stand Hours in a Day", lambda v: f"{v:.0f} h"),
         ("flights_climbed", "Most Flights Climbed in a Day", lambda v: f"{v:,.0f} flights"),
     ]
@@ -618,6 +619,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
     all_days: set = set()
     for column in (
         "weight_kg", "body_fat_pct", "height_m", "resting_hr_bpm", "vo2_max", "sleep_hours",
+        "time_in_daylight_minutes",
         "steps", "walk_run_distance_m", "move_energy_kcal", "total_energy_kcal",
         "resting_energy_kcal", "exercise_minutes", "stand_hours", "flights_climbed",
         "walking_hr_bpm",
@@ -642,6 +644,8 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
             frame[column] = frames[column].reindex(index, method="ffill")
     if "sleep_hours" in frames:
         frame["sleep_hours"] = frames["sleep_hours"].reindex(index)
+    if "time_in_daylight_minutes" in frames:
+        frame["time_in_daylight_minutes"] = frames["time_in_daylight_minutes"].reindex(index)
     if "steps" in frames:
         frame["steps"] = frames["steps"].reindex(index)
     if "walk_run_distance_m" in frames:
@@ -676,6 +680,7 @@ def build_metrics_frame(samples: dict[str, list[MetricSample]]) -> pd.DataFrame:
 # 7-day average or an average over the whole selected time period.
 DAILY_AVG_COLUMNS = (
     "steps", "walk_run_distance_m", "sleep_hours", "resting_hr_bpm", "vo2_max",
+    "time_in_daylight_minutes",
     "move_energy_kcal", "total_energy_kcal", "resting_energy_kcal",
     "exercise_minutes", "stand_hours", "flights_climbed", "walking_hr_bpm",
     "running_power_w", "running_speed_mps", "running_stride_m", "running_cadence_spm",
@@ -835,6 +840,14 @@ METRIC_LAYERS = [
         "format": lambda value: f"{value:.1f} h" if value is not None and pd.notna(value) else "N/A",
         "convert": None,
         "y_title": "Sleep Duration (h)",
+    },
+    {
+        "column": "time_in_daylight_minutes",
+        "title": "Time in Daylight (min)",
+        "color": "#F4B942",
+        "format": lambda value: f"{value:.0f} min" if value is not None and pd.notna(value) else "N/A",
+        "convert": None,
+        "y_title": "Time in Daylight (min)",
     },
     {
         "column": "steps",
@@ -1880,6 +1893,7 @@ with tab3:
         "steps": "Steps",
         "walk_run_distance_m": "Walk + Run Distance (mi)",
         "sleep_hours": "Sleep Duration (h)",
+        "time_in_daylight_minutes": "Time in Daylight (min)",
         "resting_hr_bpm": "Resting Heart Rate (bpm)",
         "move_energy_kcal": "Move Calories (kcal)",
         "total_energy_kcal": "Total Calories Burned (kcal)",
@@ -1962,6 +1976,11 @@ with tab3:
     )
     total_steps = int(range_frame["steps"].sum()) if "steps" in range_frame.columns else 0
     total_sleep_h = float(range_frame["sleep_hours"].sum()) if "sleep_hours" in range_frame.columns else 0.0
+    total_daylight_min = (
+        float(range_frame["time_in_daylight_minutes"].sum())
+        if "time_in_daylight_minutes" in range_frame.columns
+        else 0.0
+    )
     total_move_kcal = float(range_frame["move_energy_kcal"].sum()) if "move_energy_kcal" in range_frame.columns else 0.0
     total_total_kcal = float(range_frame["total_energy_kcal"].sum()) if "total_energy_kcal" in range_frame.columns else 0.0
     total_exercise_min = float(range_frame["exercise_minutes"].sum()) if "exercise_minutes" in range_frame.columns else 0.0
@@ -1975,11 +1994,12 @@ with tab3:
         else "selected time range"
     )
     st.subheader(f"Totals ({range_label})")
-    total_columns = st.columns(4)
+    total_columns = st.columns(5)
     total_columns[0].metric("Total Walk + Run Distance", f"{total_walk_run_mi:,.1f} mi")
     total_columns[1].metric("Total Steps", f"{total_steps:,}")
     total_columns[2].metric("Total Sleep", f"{total_sleep_h:,.1f} h")
     total_columns[3].metric("Total Move Calories", f"{total_move_kcal:,.0f} kcal")
+    total_columns[4].metric("Total Time in Daylight", f"{total_daylight_min:,.0f} min")
     total_columns_2 = st.columns(4)
     total_columns_2[0].metric("Total Calories Burned", f"{total_total_kcal:,.0f} kcal")
     total_columns_2[1].metric("Total Exercise Minutes", f"{total_exercise_min:,.0f} min")

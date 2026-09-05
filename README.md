@@ -22,7 +22,7 @@ A Streamlit app for exploring workouts and body measurements from an Apple Healt
 - Displays elevation and calculated speed in mph over timestamped route points.
 - Displays heart rate over time when Apple Health heart-rate samples are available.
 - Displays heart rate even when a workout has no matched GPS route.
-- Tracks body measurements (weight, body fat percentage, height, resting heart rate, sleep duration, daily steps) plus daily move calories, total calories burned, exercise time, and stand hours, and running power, speed, stride length, and cadence, and derived BMI and lean body mass, on a dedicated Health Metrics tab, with toggleable per-metric chart layers that follow the sidebar time frame. Also charts daily walking + running distance in miles from the export's `DistanceWalkingRunning` records for the selected range. Each device (Watch, iPhone) writes its own samples for the same walking, so the per-day value is the single most complete source total rather than the sum of every record — which is why it matches the Health app's own walking/running numbers.
+- Tracks body measurements (weight, body fat percentage, height, resting heart rate, sleep duration, daily steps, and time in daylight) plus daily move calories, total calories burned, exercise time, and stand hours, and running power, speed, stride length, and cadence, and derived BMI and lean body mass, on a dedicated Health Metrics tab, with toggleable per-metric chart layers, averages, and totals that follow the sidebar time frame. Also charts daily walking + running distance in miles from the export's `DistanceWalkingRunning` records for the selected range. Each device (Watch, iPhone) writes its own samples for the same walking, so the per-day value is the single most complete source total rather than the sum of every record — which is why it matches the Health app's own walking/running numbers.
 
 ## Requirements
 
@@ -103,6 +103,7 @@ Shows the latest available value for each tracked metric as rows of stat tiles (
 - **Height** — from `height` records (cm, in, ft, and m are all normalized); the chart axis and hover render in feet/inches
 - **Resting Heart Rate** — from `restingheart-rate` records
 - **Sleep Duration** — asleep time from `sleepanalysis` records summed per calendar day (`inBed` time without an asleep value is excluded)
+- **Time in Daylight (min)** — daily `timeInDaylight` records normalized to minutes; duplicate device sources use the most complete single-source total
 - **Steps (day)** — `stepcount` records summed per calendar day (a sample that spans midnight is split across the days it covers)
 - **Walking + Running Distance (mi)** — `distancewalkingrunning` records per calendar day, in miles. Apple's Watch and iPhone both write samples of the same walking, so the day's value is the largest single-source total, which matches the Health app's own walking/running figure.
 - **Move Calories (kcal)** — `activeenergyburned` samples summed per calendar day (samples one day past the range exist only for workout backfill and are included so the daily total stays inside the selected range).
@@ -124,7 +125,7 @@ A trophy shelf of daily and all-time records, computed from the current date ran
 - **Workout Records (best single workout)** — longest duration, farthest distance, fastest pace, most total calories, most active calories, highest average heart rate
 - **Streaks (consecutive days)** — longest run of consecutive days with a workout, with 30+ minutes of exercise, and with 12+ stand hours
 - **Most in a Day (workouts)** — most workouts, hours, distance, and calories in a single day
-- **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep, most stand hours, and most flights climbed
+- **Most in a Day (health)** — most total steps, total walk + run distance, exercise minutes, move calories, and total calories burned in a single day, plus most sleep, time in daylight, stand hours, and flights climbed
 - **Running Records** — highest daily-average running power, speed, stride length, and cadence
 - **Best Body Measurements (lowest)** — lowest weight, lowest body fat, best (lowest) BMI, and lowest resting heart rate
 
