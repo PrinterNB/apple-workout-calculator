@@ -2021,6 +2021,12 @@ with tab3:
         key="metrics_trendlines",
         help="Draws a smoothed trend (centered 15-day average) as the main line for each displayed metric, with the raw measurements faded in the background.",
     )
+    show_average = st.checkbox(
+        "Average line (whole dataset)",
+        value=False,
+        key="metrics_average",
+        help="Adds a thin dashed line at the average of all displayed data for each metric, drawn behind the measurements and trend lines so small deviations stay readable.",
+    )
     selected_layer_defs = [layer for layer in available_layers if layer["title"] in selected_layers]
     if not selected_layer_defs:
         st.info("Select at least one metric layer to display.")
@@ -2108,6 +2114,21 @@ with tab3:
                         ),
                         row=row,
                         col=1,
+                    )
+
+                if show_average:
+                    # Thin dashed mean of the whole plotted series. Shapes render
+                    # under the traces, so points and trend lines keep priority
+                    # over it even when day-to-day changes are small.
+                    fig.add_hline(
+                        y=float(plotted.mean()),
+                        row=row,
+                        col=1,
+                        line_dash="dash",
+                        line_width=1,
+                        line_color=faded_color(layer["color"], 0.55),
+                        annotation_text=f"Avg: {layer['format'](float(series.mean()))}",
+                        annotation_position="top right",
                     )
             fig.update_layout(
                 template="plotly_white",
