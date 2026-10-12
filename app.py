@@ -1111,26 +1111,40 @@ def render_map(
 
 
 def render_elevation_profile(route: RouteRecord | None, workout: WorkoutRecord) -> None:
-    frame = pd.DataFrame(columns=["time", "elevation_m", "speed_mph"])
-    if route:
-        times = route_times(route)
-        if sum(1 for value in times if value is not None) >= 2:
-            frame = pd.DataFrame(
-                {
-                    "time": pd.to_datetime(times, utc=True, errors="coerce"),
-                    "elevation_m": [point.elevation_m for point in route.points],
-                    "speed_mph": route_speeds_mph(route),
-                }
-            ).dropna(subset=["time"])
+    # Points are already parsed in the shared records; only build the frames once
+    # per workout so toggling a chart control later does not redo this work.
+    frame_cache = st.session_state.setdefault("elevation_profile_frames", {})
+    frame_key = (
+        st.session_state.get("loaded_export_signature"),
+        st.session_state.get("loaded_route_signature"),
+        str(workout.uuid),
+        str(route.file_path) if route else None,
+    )
+    cached_frames = frame_cache.get(frame_key)
+    if cached_frames:
+        frame, heart_rate_frame = cached_frames
+    else:
+        frame = pd.DataFrame(columns=["time", "elevation_m", "speed_mph"])
+        if route:
+            times = route_times(route)
+            if sum(1 for value in times if value is not None) >= 2:
+                frame = pd.DataFrame(
+                    {
+                        "time": pd.to_datetime(times, utc=True, errors="coerce"),
+                        "elevation_m": [point.elevation_m for point in route.points],
+                        "speed_mph": route_speeds_mph(route),
+                    }
+                ).dropna(subset=["time"])
 
-    heart_rate_frame = pd.DataFrame(columns=["time", "heart_rate_bpm"])
-    if workout.heart_rate_samples:
-        heart_rate_frame = pd.DataFrame(
-            workout.heart_rate_samples,
-            columns=["time", "heart_rate_bpm"],
-        )
-        heart_rate_frame["time"] = pd.to_datetime(heart_rate_frame["time"], utc=True, errors="coerce")
-        heart_rate_frame = heart_rate_frame.dropna(subset=["time"])
+        heart_rate_frame = pd.DataFrame(columns=["time", "heart_rate_bpm"])
+        if workout.heart_rate_samples:
+            heart_rate_frame = pd.DataFrame(
+                workout.heart_rate_samples,
+                columns=["time", "heart_rate_bpm"],
+            )
+            heart_rate_frame["time"] = pd.to_datetime(heart_rate_frame["time"], utc=True, errors="coerce")
+            heart_rate_frame = heart_rate_frame.dropna(subset=["time"])
+        frame_cache[frame_key] = (frame, heart_rate_frame)
 
     if frame.empty and heart_rate_frame.empty:
         if route:
@@ -1234,21 +1248,31 @@ def render_running_profile(workout: WorkoutRecord, running_metrics: dict) -> Non
         pairs.sort(key=lambda item: item[0])
         return pairs
 
-    # (title, filtered pairs, mph factor for m/s samples or None, unit tag)
+    # Memoize the window-filtered samples: a widget toggle reruns the script, and
+    # scanning every power/speed/cadence sample again on each rerun is data work
+    # that no toggle depends on. The export signature invalidates stale entries.
+    pair_cache = st.session_state.setdefault("running_window_cache", {})
+    pair_key = (
+        st.session_state.get("loaded_export_signature"),
+        str(window_start),
+        str(window_end),
+    )
+    pairs_by_metric = pair_cache.get(pair_key)
+    if pairs_by_metric is None:
+        pairs_by_metric = {
+            metric_key: in_window(running_metrics.get(metric_key))
+            for metric_key in (
+                "running_power_samples",
+                "running_speed_samples",
+                "running_cadence_samples",
+            )
+        }
+        pair_cache[pair_key] = pairs_by_metric
+
     series = [
-        ("Power (W)", in_window(running_metrics.get("running_power_samples")), None, "watts"),
-        (
-            "Running Speed (mph)",
-            in_window(running_metrics.get("running_speed_samples")),
-            2.2369362921,
-            "mph",
-        ),
-        (
-            "Running Cadence (steps/min)",
-            in_window(running_metrics.get("running_cadence_samples")),
-            None,
-            "spm",
-        ),
+        ("Power (W)", pairs_by_metric["running_power_samples"], None, "watts"),
+        ("Running Speed (mph)", pairs_by_metric["running_speed_samples"], 2.2369362921, "mph"),
+        ("Running Cadence (steps/min)", pairs_by_metric["running_cadence_samples"], None, "spm"),
     ]
     present = [entry for entry in series if entry[1]]
     if not present:
@@ -1487,7 +1511,11 @@ if export_signature is None:
     )
     st.stop()
 
-data_size = folder_size_bytes(folder_key, export_signature, route_signature)
+size_cache_key = (folder_key, export_signature, route_signature)
+if st.session_state.get("folder_size_cache_key") != size_cache_key:
+    st.session_state["folder_size_cache_key"] = size_cache_key
+    st.session_state["folder_size_bytes"] = folder_size_bytes(folder_key, export_signature, route_signature)
+data_size = st.session_state["folder_size_bytes"]
 with st.sidebar:
     st.metric("Export Data Size", format_bytes(data_size))
 
