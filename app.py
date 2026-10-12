@@ -2063,7 +2063,7 @@ with tab3:
     )
     show_average = st.checkbox(
         "Average line (whole dataset)",
-        value=False,
+        value=True,
         key="metrics_average",
         help="Adds a thin dashed line at the average of all displayed data for each metric, drawn behind the measurements and trend lines so small deviations stay readable.",
     )
