@@ -31,7 +31,11 @@ from health_parser import (
 
 DATA_PARSER_VERSION = 24
 
-st.set_page_config(page_title="Apple Workout Calculator", layout="wide")
+st.set_page_config(
+    page_title="Apple Workout Calculator",
+    layout="wide",
+    favicon="static/favicon.png",
+)
 
 
 @st.cache_data(show_spinner=False)
@@ -1501,6 +1505,10 @@ if process_requested:
         st.session_state["workouts"] = parsed_workouts
         st.session_state["health_metrics"] = (parsed_metrics, parsed_counts)
         st.session_state["health_metrics_summaries"] = build_metric_summaries(parsed_metrics)
+        # Keep the derived frames around too: a widget toggle reruns the script,
+        # and rebuilding them each rerun is what makes toggling feel like a re-parse.
+        st.session_state["workouts_frame"] = workouts_to_frame(parsed_workouts)
+        st.session_state["metrics_frame"] = build_metrics_frame(parsed_metrics)
         progress.finish_stage()
 
         if route_signature is not None:
@@ -1545,7 +1553,9 @@ if (
 workouts = st.session_state.get("workouts", [])
 routes = st.session_state.get("routes", [])
 
-df = workouts_to_frame(workouts)
+if "workouts_frame" not in st.session_state:
+    st.session_state["workouts_frame"] = workouts_to_frame(workouts)
+df = st.session_state["workouts_frame"].copy()
 route_lookup = st.session_state.get("route_lookup", {})
 
 if not df.empty:
@@ -1860,7 +1870,9 @@ with tab2:
 
 with tab3:
     metrics_samples, metrics_counts = st.session_state.get("health_metrics", ({}, {}))
-    metrics_frame = build_metrics_frame(metrics_samples)
+    if "metrics_frame" not in st.session_state:
+        st.session_state["metrics_frame"] = build_metrics_frame(metrics_samples)
+    metrics_frame = st.session_state["metrics_frame"]
 
     if metrics_frame.empty:
         found_counts = {name: count for name, count in metrics_counts.items() if count > 0}
@@ -2125,8 +2137,8 @@ with tab3:
                         row=row,
                         col=1,
                         line_dash="dash",
-                        line_width=1,
-                        line_color=faded_color(layer["color"], 0.55),
+                        line_width=1.5,
+                        line_color=faded_color(layer["color"], 0.7),
                         annotation_text=f"Avg: {layer['format'](float(series.mean()))}",
                         annotation_position="top right",
                     )
@@ -2146,7 +2158,9 @@ with tab4:
         "computed from the current date range and activity-type filters."
     )
 
-    records_metrics_frame = build_metrics_frame(st.session_state.get("health_metrics", ({}, {}))[0])
+    if "metrics_frame" not in st.session_state:
+        st.session_state["metrics_frame"] = build_metrics_frame(st.session_state.get("health_metrics", ({}, {}))[0])
+    records_metrics_frame = st.session_state["metrics_frame"]
 
     sections = [
         ("Workout Records (best single workout)", build_workout_records(filtered_df)),
