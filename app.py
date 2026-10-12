@@ -34,7 +34,7 @@ DATA_PARSER_VERSION = 24
 st.set_page_config(
     page_title="Apple Workout Calculator",
     layout="wide",
-    favicon="static/favicon.png",
+    page_icon="static/favicon.png",
 )
 
 
