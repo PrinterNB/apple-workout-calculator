@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import subprocess
+import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1337,7 +1338,30 @@ def choose_export_folder(initial_dir: Path | None = None) -> str | None:
     """Open a native folder-picker window and return the chosen path (None if cancelled)."""
     initial = str(initial_dir) if initial_dir and initial_dir.is_dir() else None
 
-    # Preferred: tkinter's native "Select Folder" dialog (Tk 8.9+ on macOS/Windows; needs _tkcltk).
+    if sys.platform == "darwin":
+        # Streamlit runs the app script off the main thread, and Tk on macOS
+        # aborts the whole process (NSWindow "main thread only") when a window
+        # is created there — Python cannot catch that native crash. Use the
+        # native AppleScript folder chooser in a child process instead.
+        script = (
+            'set chosen to (choose folder "Select Apple Health export folder")\n'
+            "return POSIX path of chosen"
+        )
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            selected = result.stdout.strip()
+            if selected:
+                return selected
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return None
+
+    # Preferred: tkinter's native "Select Folder" dialog (Windows; Tk is thread-safe there; macOS uses the chooser above).
     try:
         import tkinter as tk
         from tkinter import filedialog

@@ -19,6 +19,8 @@ Branch: `macos-port` (from `main`). Target: macOS 27.x, arm64, CPython 3.13. Win
 
 7. **Test fixture added**: `testdata/apple_health_export/` — synthetic Apple export (`export.xml`: 5 workouts with `startDate`/`endDate`/`durationUnit`/`totalDistance`/`totalEnergyBurned`, 2 StepCount, 2 BodyMass, 2 SleepAnalysis records, attribute names taken from the parser's own readers) and `workout-routes/` with 4 GPX files named `route_YYYY-MM-DD_H.HHam` (the format `health_parser._extract_route_time_from_filename` expects). 4 routes exercise the `>= 4` `ThreadPoolExecutor` branch and match their workouts by timestamp.
 
+8. **`app.py: choose_export_folder` — new macOS folder-picker branch** (`sys.platform == "darwin"`, plus `import sys`). Pressing "Select Folder…" crashed the whole process on macOS (`NSWindow should only be instantiated on the main thread!`): Streamlit executes the app script in a non-main thread, and macOS Tk aborts natively there — uncatchable by Python's `except`. The fix uses the native AppleScript chooser (`osascript` `choose folder`, POSIX-pathed) in a child process, so Tk is never touched on macOS. Windows keeps its original tkinter → PowerShell chain untouched. Cancelled picks return `None` → the sidebar text-input fallback takes over.
+
 ## Verification (all on this Mac, arm64, Python 3.13.0)
 
 | Step | Result |
