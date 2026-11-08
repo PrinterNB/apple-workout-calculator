@@ -2,6 +2,8 @@
 
 A Streamlit app for exploring workouts and body measurements from an Apple Health export. It provides aggregate workout statistics, an individual workout inspector with route maps, elevation, speed, and heart-rate profiles, a health-metrics tab tracking body measurements over time, and a records tab of daily and all-time bests.
 
+> Looking for the macOS port? It lives on the [`macos-port`](https://github.com/PrinterNB/apple-workout-calculator/tree/macos-port) branch; see `PORTING_MACOS.md` there for setup details.
+
 ## Features
 
 - Streams `export.xml` with `xml.etree.ElementTree.iterparse`, so the full export is not loaded into memory.
