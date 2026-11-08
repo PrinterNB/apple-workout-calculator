@@ -1,0 +1,3 @@
+# macOS-first-class checkout: Python sources always get LF (Windows handles LF fine).
+*.py text eol=lf
+*.gpx text eol=lf

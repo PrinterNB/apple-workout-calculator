@@ -1337,7 +1337,7 @@ def choose_export_folder(initial_dir: Path | None = None) -> str | None:
     """Open a native folder-picker window and return the chosen path (None if cancelled)."""
     initial = str(initial_dir) if initial_dir and initial_dir.is_dir() else None
 
-    # Preferred: tkinter's native "Select Folder" dialog (real Windows file browser).
+    # Preferred: tkinter's native "Select Folder" dialog (Tk 8.9+ on macOS/Windows; needs _tkcltk).
     try:
         import tkinter as tk
         from tkinter import filedialog

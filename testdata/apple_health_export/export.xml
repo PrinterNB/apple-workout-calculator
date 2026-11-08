@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthExportFile version="2025.03.15.0000000000000000.12">
+  <HealthExportData platform="darwin" version="18.2.0.1234567890">
+    <ExportedData>
+      <RecordingEntries/>
+      <GenerationStatistics/>
+      <Devices/>
+      <MetadataData>
+        <MetadataEntries/>
+      </MetadataData>
+      <SharingPreferences/>
+      <IndividualProfileInformation/>
+      <Workouts>
+        <Workout type="Workout.Run" workoutActivityType="workoutActivityType.running" startDate="2025-03-02 09:15:00 +0000" endDate="2025-03-02 09:45:00 +0000" duration="30.000000" durationUnit="min" totalDistance="4.523100" totalDistanceUnit="km" totalEnergyBurned="352.100000" totalEnergyBurnedUnit="kcal" device="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" sourceName="de.cudo.HealthKitAppExport" sourceVersion="3.3.1" uuid="F1A2B3C4-0001-4A5B-6C7D-8E9F00A1B2C3">
+          <MetadataData>
+            <MetadataEntry type="averageHeartRate" value="141.000000" units="count/min"/>
+            <MetadataEntry type="maximumHeartRate" value="168.000000" units="count/min"/>
+          </MetadataData>
+        </Workout>
+        <Workout type="Workout.Ride" workoutActivityType="workoutActivityType.cycling" startDate="2025-03-05 17:30:00 +0000" endDate="2025-03-05 18:00:00 +0000" duration="30.000000" durationUnit="min" totalDistance="8.200000" totalDistanceUnit="km" totalEnergyBurned="240.000000" totalEnergyBurnedUnit="kcal" device="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" sourceName="de.cudo.HealthKitAppExport" sourceVersion="3.3.1" uuid="F1A2B3C4-0002-4A5B-6C7D-8E9F00A1B2C3">
+          <MetadataData>
+            <MetadataEntry type="averageHeartRate" value="122.000000" units="count/min"/>
+          </MetadataData>
+        </Workout>
+        <Workout type="Workout.Swim" workoutActivityType="workoutActivityType.swimming" startDate="2025-03-08 07:00:00 +0000" endDate="2025-03-08 07:20:00 +0000" duration="20.000000" durationUnit="min" totalDistance="0.800000" totalDistanceUnit="km" totalEnergyBurned="150.000000" totalEnergyBurnedUnit="kcal" device="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" sourceName="de.cudo.HealthKitAppExport" sourceVersion="3.3.1" uuid="F1A2B3C4-0003-4A5B-6C7D-8E9F00A1B2C3">
+          <MetadataData/>
+        </Workout>
+        <Workout type="Workout.Hike" workoutActivityType="workoutActivityType.hiking" startDate="2025-03-09 18:00:00 +0000" endDate="2025-03-09 18:25:00 +0000" duration="25.000000" durationUnit="min" totalDistance="1.600000" totalDistanceUnit="km" totalEnergyBurned="110.000000" totalEnergyBurnedUnit="kcal" device="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" sourceName="de.cudo.HealthKitAppExport" sourceVersion="3.3.1" uuid="F1A2B3C4-0004-4A5B-6C7D-8E9F00A1B2C3">
+          <MetadataData/>
+        </Workout>
+        <Workout type="Workout.Walk" workoutActivityType="workoutActivityType.walking" startDate="2025-03-12 12:00:00 +0000" endDate="2025-03-12 12:25:00 +0000" duration="25.000000" durationUnit="min" totalDistance="1.850000" totalDistanceUnit="km" totalEnergyBurned="95.000000" totalEnergyBurnedUnit="kcal" device="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" sourceName="de.cudo.HealthKitAppExport" sourceVersion="3.3.1" uuid="F1A2B3C4-0005-4A5B-6C7D-8E9F00A1B2C3">
+          <MetadataData/>
+        </Workout>
+      </Workouts>
+      <LifestyleChangesCollection>
+        <Record type="HKQuantityTypeIdentifierStepCount" startDate="2025-03-02 00:00:00 +0000" endDate="2025-03-02 23:00:00 +0000" value="8500" unit="count" dev="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" src="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD"/>
+        <Record type="HKQuantityTypeIdentifierStepCount" startDate="2025-03-05 00:00:00 +0000" endDate="2025-03-05 23:00:00 +0000" value="11200" unit="count" dev="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" src="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD"/>
+        <Record type="HKQuantityTypeIdentifierBodyMass" startDate="2025-03-01 07:10:00 +0000" endDate="2025-03-01 07:10:00 +0000" value="72.56" unit="kg" dev="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" src="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD"/>
+        <Record type="HKQuantityTypeIdentifierBodyMass" startDate="2025-03-08 07:05:00 +0000" endDate="2025-03-08 07:05:00 +0000" value="72.31" unit="kg" dev="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" src="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD"/>
+        <Record type="HKCategoryTypeIdentifierSleepAnalysis" startDate="2025-03-02 21:30:00 +0000" endDate="2025-03-03 06:15:00 +0000" sleepValue="sleepValueAsleep" dev="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" src="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD"/>
+        <Record type="HKCategoryTypeIdentifierSleepAnalysis" startDate="2025-03-05 22:00:00 +0000" endDate="2025-03-06 05:45:00 +0000" sleepValue="sleepValueAsleep" dev="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD" src="IPHONEA1B2C3D4E5F60718293A4B5C6D7E8F90ABCD"/>
+      </LifestyleChangesCollection>
+    </ExportedData>
+  </HealthExportData>
+</HealthExportFile>

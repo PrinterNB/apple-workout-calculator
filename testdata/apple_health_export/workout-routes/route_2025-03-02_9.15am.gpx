@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1" version="1.1" creator="AppleHealthExport" time="2025-03-02T09:15:00Z">
+  <metadata><time>2025-03-02T09:15:00Z</time></metadata>
+  <trk>
+    <name>Outdoor Run</name>
+    <trkseg>
+      <trkpt lat="47.652000" lon="-122.342000"><ele>10.00</ele><time>2025-03-02T09:15:00Z</time></trkpt>
+      <trkpt lat="47.653000" lon="-122.341000"><ele>10.50</ele><time>2025-03-02T09:20:00Z</time></trkpt>
+      <trkpt lat="47.654000" lon="-122.340000"><ele>11.00</ele><time>2025-03-02T09:25:00Z</time></trkpt>
+      <trkpt lat="47.655000" lon="-122.339000"><ele>10.50</ele><time>2025-03-02T09:30:00Z</time></trkpt>
+      <trkpt lat="47.656000" lon="-122.338000"><ele>10.00</ele><time>2025-03-02T09:35:00Z</time></trkpt>
+      <trkpt lat="47.657000" lon="-122.337000"><ele>9.50</ele><time>2025-03-02T09:40:00Z</time></trkpt>
+      <trkpt lat="47.658000" lon="-122.336000"><ele>10.00</ele><time>2025-03-02T09:45:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

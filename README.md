@@ -31,17 +31,21 @@ A Streamlit app for exploring workouts and body measurements from an Apple Healt
 - An extracted Apple Health `apple_health_export/` folder containing `export.xml`
 - Optional `workout-routes/` subdirectory inside that folder
 
-Install the dependencies into your global Python environment:
+Install the dependencies (on macOS a virtual environment is recommended — the exact verified steps are in `PORTING_MACOS.md`):
 
 ```bash
+python3 -m venv .venv-macos            # macOS (optional but recommended)
+source .venv-macos/bin/activate        # macOS
 python -m pip install -r requirements.txt
 ```
 
 ## Run the app
 
 ```bash
-streamlit run app.py
+streamlit run app.py                   # headless: streamlit run app.py --server.headless true
 ```
+
+To try the app without your own export, point it at the checked-in fixture in `testdata/apple_health_export/` — a small synthetic Apple export with 5 workouts, health metric records, and 4 GPX routes in `workout-routes/`.
 
 In the sidebar, enter the path to the extracted `apple_health_export/` folder — or any folder that contains it (for example the unzipped archive root), which the app walks up to three levels deep to locate `export.xml`. The app then works from the folder that actually holds `export.xml`:
 
@@ -54,7 +58,7 @@ The sidebar also shows the total size of the selected export folder. If the rout
 
 Activity-type filters and workout selection reuse the already-loaded data without reparsing the export or rematching routes.
 
-The main `export.xml` is streamed with `iterparse` in a **single pass** (`parse_export_all` in `health_parser.py`) that collects workouts, heart-rate/energy samples, and health metrics together, so a large export is only read and XML-parsed once. The pass shows a live progress bar with an ETA while it runs. Route files are parsed in parallel when there are several files; if a Windows worker process fails, route parsing automatically falls back to sequential parsing.
+The main `export.xml` is streamed with `iterparse` in a **single pass** (`parse_export_all` in `health_parser.py`) that collects workouts, heart-rate/energy samples, and health metrics together, so a large export is only read and XML-parsed once. The pass shows a live progress bar with an ETA while it runs. Route files are parsed in parallel (threads, via `concurrent.futures.ThreadPoolExecutor`) when there are several files; any single route file that fails to parse is skipped, and small sets of routes are parsed sequentially.
 
 ## Apple Health export
 

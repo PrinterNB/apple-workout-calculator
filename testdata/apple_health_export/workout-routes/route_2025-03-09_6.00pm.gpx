@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="AppleHealthExport" time="2025-03-09T18:00:00Z">
+  <trk>
+    <name>Outdoor Hike</name>
+    <trkseg>
+      <trkpt lat="47.700000" lon="-122.400000"><ele>120.00</ele><time>2025-03-09T18:00:00Z</time></trkpt>
+      <trkpt lat="47.702000" lon="-122.402000"><ele>135.00</ele><time>2025-03-09T18:05:00Z</time></trkpt>
+      <trkpt lat="47.704000" lon="-122.404000"><ele>150.00</ele><time>2025-03-09T18:10:00Z</time></trkpt>
+      <trkpt lat="47.706000" lon="-122.406000"><ele>140.00</ele><time>2025-03-09T18:15:00Z</time></trkpt>
+      <trkpt lat="47.708000" lon="-122.408000"><ele>130.00</ele><time>2025-03-09T18:20:00Z</time></trkpt>
+      <trkpt lat="47.710000" lon="-122.410000"><ele>125.00</ele><time>2025-03-09T18:25:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

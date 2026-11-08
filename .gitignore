@@ -1,3 +1,5 @@
+# macOS port: local virtual env
+.venv-macos/
 __pycache__/
 *.py[cod]
 *$py.class
